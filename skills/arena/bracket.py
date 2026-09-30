@@ -7,7 +7,7 @@ own context gets compacted halfway through a 100-agent run.
 
     python3 bracket.py plan --agents 100             # rounds, sub-agent calls and waves. Writes nothing.
     python3 bracket.py init --agents 100 --seed 7 --task-file task.md [--baseline-file old.md]
-    python3 bracket.py init --quick --task "..."     # 16 agents
+    python3 bracket.py init --quick --task "..."     # 2 agents
     python3 bracket.py next                          # what to do now, and the exact command for it
     python3 bracket.py prompts <phase>               # write the sub-agent briefs, list the jobs left, in waves
     python3 bracket.py check <phase>                 # which outputs are still missing
@@ -40,9 +40,10 @@ STRATEGIES_PATH = os.path.join(HERE, "strategies.json")
 SKILL_PATH = os.path.join(HERE, "SKILL.md")
 RUBRIC_PATH = os.path.join(HERE, "rubric.md")
 
-DEFAULT_AGENTS = 100
-QUICK_AGENTS = 16
-DEFAULT_WAVE = 10          # conservative orchestration batch size; host limits vary
+DEFAULT_AGENTS = 4
+QUICK_AGENTS = 2
+DEFAULT_WAVE = 4           # safe fallback; the orchestrator should pass the host capacity
+DEFAULT_MAX_CALLS = 44     # at most an 8-agent tournament plus an optional final check
 ROOT = ".arena"
 LATEST = "LATEST"
 STATE_FILE = "arena.json"
@@ -868,6 +869,8 @@ def cmd_init(args):
     n = _agents_arg(args)
     if args.wave < 1:
         raise ArenaError("--wave must be at least 1")
+    if args.max_calls < 1:
+        raise ArenaError("--max-calls must be at least 1")
     data = load_strategies()
     if n < 1 or n > combo_count(data):
         raise ArenaError("--agents must be between 1 and %d (the number of distinct cards)" % combo_count(data))
@@ -885,6 +888,14 @@ def cmd_init(args):
             baseline = fh.read().strip()
         if not baseline:
             raise ArenaError("the baseline file is empty")
+    totals = plan_totals(n, args.wave)
+    planned_calls = totals["calls"] + (1 if baseline else 0)
+    if planned_calls > args.max_calls:
+        raise ArenaError(
+            "this run needs %d sub-agent calls, above the %d-call limit. "
+            "Choose fewer agents or explicitly raise --max-calls after the user approves the cost."
+            % (planned_calls, args.max_calls)
+        )
     seed = args.seed if args.seed is not None else random.SystemRandom().randrange(1, 1000000)
     default_dir = not args.dir
     d = os.path.abspath(args.dir or os.path.join(ROOT, "run-%s-s%s" % (time.strftime("%Y%m%d-%H%M%S"), seed)))
@@ -907,7 +918,7 @@ def cmd_init(args):
         os.makedirs(ROOT, exist_ok=True)
         with open(os.path.join(ROOT, LATEST), "w", encoding="utf-8") as fh:
             fh.write(d + "\n")
-    t = plan_totals(n, args.wave)
+    t = totals
     print("arena ready: %s" % d)
     print("seed %s. %d agents, %d distinct cards dealt from %d, no repeats."
           % (seed, n, n, combo_count(data)))
@@ -1179,7 +1190,10 @@ def build_parser():
     s.add_argument("--task-file", help="the task, word for word, as every competitor will get it")
     s.add_argument("--task", help="the task as a string, instead of --task-file")
     s.add_argument("--baseline-file", help="the answer the user was not satisfied with")
-    s.add_argument("--wave", type=int, default=DEFAULT_WAVE, help="parallel sub-agents per wave (default 10)")
+    s.add_argument("--wave", type=int, default=DEFAULT_WAVE,
+                   help="parallel sub-agents per wave (default %d)" % DEFAULT_WAVE)
+    s.add_argument("--max-calls", type=int, default=DEFAULT_MAX_CALLS,
+                   help="refuse larger runs unless this limit is explicitly raised (default %d)" % DEFAULT_MAX_CALLS)
     s.set_defaults(func=cmd_init)
 
     s = sub.add_parser("next", parents=[common], help="what to do now")

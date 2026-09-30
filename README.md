@@ -2,7 +2,7 @@
 
 An OpenAI adaptation of [Jakeschincariol/arena-skill](https://github.com/Jakeschincariol/arena-skill).
 
-Arena turns one task into a structured tournament. Multiple candidate solutions receive different reasoning/workflow/strategy cards, attack each other, defend and revise, and are judged against a written rubric until one solution survives.
+Arena turns one task into a budgeted tournament. A small set of candidate solutions receive different reasoning/workflow/strategy cards, attack each other, defend and revise, and are judged against a written rubric until one solution survives.
 
 This repository keeps the original portable tournament engine and adapts the orchestration layer for OpenAI skills/plugins and Codex.
 
@@ -29,7 +29,7 @@ The portable plugin is rooted at this repository. The compatibility manifest als
 ```json
 {
   "name": "arena-openai",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Tournament-style answer refinement for ChatGPT and Codex.",
   "skills": "./skills/"
 }
@@ -38,24 +38,34 @@ The portable plugin is rooted at this repository. The compatibility manifest als
 Then ask Codex to use the Arena skill, for example:
 
 ```
-Use arena --quick to solve this task: ...
+Use arena to solve this task: ...
 ```
 
 or:
 
 ```
-Run an arena with 32 competitors for this debugging problem: ...
+Run an arena with 8 competitors for this difficult debugging problem: ...
 ```
 
 ## Modes
 
-- default: 100 competitors
-- `--quick`: 16 competitors
+- default: 4 competitors, 19 calls
+- `--quick`: 2 competitors, 7 calls
 - `--agents N`: choose the competitor count
 - `--seed S`: reproducible cards and bracket
-- `--wave W`: jobs grouped per orchestration wave
+- `--wave W`: jobs grouped per orchestration wave; set it to current host capacity
+- `--max-calls C`: hard call budget; default 44
 
-The original engine estimates 595 sub-agent calls for a 100-competitor tournament and 91 for the 16-competitor quick mode.
+The engine refuses runs above 44 calls unless the caller explicitly raises `--max-calls`. That keeps
+plain-language Arena requests within 8 competitors, including one optional final check. The historical 100-competitor mode requires 595
+calls and should be used only after explicit cost approval.
+
+## Codex model and concurrency policy
+
+Arena adapts to the current runtime rather than assuming every Codex task has the same worker limit.
+Fast, economical models are appropriate for candidate, attack, and defense jobs. When worker-specific
+model selection is available, the judge and final comparison should prefer `gpt-6-astra` unless the
+user chose another model. Model selection does not create additional concurrent worker slots.
 
 ## Safety / project isolation
 

@@ -1,18 +1,18 @@
 ---
 name: arena
 description: >-
-  Run a tournament of candidate solutions for one task. Creates N competitors
-  (default 100, --quick for 16), gives each the same task plus a different
+  Run a budgeted tournament of candidate solutions for one task. Uses a small
+  field by default (normally 4, --quick for 2), gives each the same task plus a different
   reasoning/workflow/strategy card, then runs attack, defend, revise and judge
   rounds until one solution survives. Use when the user explicitly asks for
-  arena/competition/multiple candidate agents, or wants a costly adversarial
+  arena/competition/multiple candidate agents, or wants an adversarial
   refinement pass after an unsatisfactory answer.
-argument-hint: "[--agents N | --quick] [--seed S] <task>"
 ---
 
 # arena
 
-For when OpenAI model keeps giving a bad answer. Instead of asking again and again, this runs a tournament:
+Arena should be easy to invoke: the user selects `$arena` and states the task in ordinary language.
+Flags are optional. Instead of asking again and again, Arena runs a bounded tournament:
 N sub-agents get the exact same task, each attacks it with a different reasoning mode, workflow and
 strategy, and then they attack each other in a bracket until one solution is left. You are the
 orchestrator. You never compete and you never judge.
@@ -35,29 +35,32 @@ this skill" that Codex printed at the top of this skill. The state lives in
 `.arena/<run>/arena.json` in the current directory, and every command after `init` finds it through
 `.arena/LATEST`.
 
-## Step 1: size it, and get a yes if nobody asked for it
+## Step 1: choose a proportionate size and budget
 
 Read the flags out of the request. Everything that is not a flag is the task.
 
 | flag | meaning |
 | --- | --- |
-| `--agents N` | N competitors. Default 100. |
-| `--quick` | 16 competitors. The everyday setting. |
+| `--agents N` | Explicit competitor count. |
+| `--quick` | 2 competitors, 1 round, 7 calls. |
 | `--seed S` | Fixes the cards and the pairings. Default: random, and recorded. |
-| `--wave W` | Sub-agents per wave. Default 10. Only raise it if the user raised Codex's limit. |
+| `--wave W` | Maximum jobs launched together. Clamp this to available worker capacity. |
+| `--max-calls C` | Explicit call budget. Default 44, enough for 8 competitors plus a final check. |
 
-No task text at all means: the task is the user's most recent request in this conversation, and your
-last answer to it is the baseline to beat.
+No task text means the task is the user's most recent request. Treat the last answer as the baseline
+only when the user rejected it.
 
-Run `ARENA plan --agents N` (or `--quick`). It prints the rounds, the sub-agent calls and the waves.
+When the user did not choose a size, use 2 competitors for a simple comparison, rewrite,
+recommendation, or narrow factual task; 4 for normal analysis, planning, debugging, or design; and
+8 only for genuinely difficult, high-impact, or strongly ambiguous work.
 
-- **The user asked for the arena** (typed `/arena`, said "arena", or asked to make them compete):
-  tell them in one line how big it is, for example "100 agents, 7 rounds, 595 sub-agent calls", and
-  start.
-- **This skill fired because the user is unhappy** ("that's wrong", "try again", "bad answer") and
-  never mentioned the arena: ask once before spending anything. Offer three options: the full arena
-  (100 agents, 595 sub-agent calls), `--quick` (16 agents, 91 calls), or an ordinary retry. Wait for
-  the answer.
+Run `ARENA plan --agents N --wave W` before initialization and tell the user the competitor count,
+rounds, and calls in one short line. Do not exceed 8 competitors or 44 planned calls without showing
+the exact cost and receiving explicit approval. The engine enforces this through `--max-calls`;
+raise it only after approval. Never silently start the historical 100-agent, 595-call mode.
+
+Use the current host's real worker capacity when the runtime exposes it. Do not infer a universal
+Codex limit from one task, and do not claim that `--wave` creates worker slots.
 
 All tournament work belongs under `.arena/` in the current directory. Respect the host's file and approval model. Do not widen permissions or modify user settings on your own.
 
@@ -76,7 +79,7 @@ on its own:
 - If there is an answer to beat: what the user disliked about it, in their words.
 
 Do not add requirements the user never gave. Do not write your own view of the right answer into it:
-that pushes 100 agents the same way, which is the opposite of the point.
+that pushes every competitor the same way, which is the opposite of the point.
 
 If there is an earlier answer the user was not satisfied with, write it word for word to
 `.arena/baseline.md`.
@@ -84,12 +87,23 @@ If there is an earlier answer the user was not satisfied with, write it word for
 ## Step 3: init
 
 ```bash
-ARENA init --agents N --seed S --task-file .arena/task.md --baseline-file .arena/baseline.md
+ARENA init --agents N --wave W --max-calls C --seed S --task-file .arena/task.md --baseline-file .arena/baseline.md
 ```
 
 Leave out `--baseline-file` when there is nothing to beat, and `--seed` to get a random one. `init`
 copies the task into the run folder, deals every competitor a different strategy card with no
 repeats, pairs round 1, and writes `arena.json`.
+
+## Model roles
+
+Use model capability where it changes the result instead of multiplying expensive calls:
+
+- Competitor, attack, and defend jobs use the lowest-cost available model that can reliably handle
+  the task. Preserve an explicit model choice from the user.
+- Judge and final jobs prefer `gpt-6-astra` when available and when the user has not requested a
+  different model. A stronger judge is more valuable than dozens of extra competitors.
+- If the host cannot select models per worker, use its current model and disclose that limitation.
+- Model choice does not change concurrency. Worker capacity is controlled by the host runtime.
 
 ## Step 4: the loop
 
@@ -100,7 +114,8 @@ Every phase that runs competitors or judges works the same way:
 
 1. `ARENA prompts <phase>` writes one brief per job and lists the jobs still to run, grouped into waves.
 2. Prefer a runtime-provided independent sub-agent, worker, delegation, or multi-agent capability. Give each worker only the generated prompt file for its job and require it to write only the output files named in that prompt.
-3. Run at most one configured wave at a time unless the host explicitly supports more concurrency. Wait for the whole wave before launching the next wave.
+3. Launch up to the available worker capacity, never more than the configured wave. Wait for the
+   active batch before launching more jobs in that phase.
 4. If the current ChatGPT/Codex surface does not expose independent sub-agents, use a clearly identified sequential fallback: execute each generated brief as a separate isolated role in the current model, reset attention to the brief between jobs, and do not claim that these were independent agents. The bracket mechanics remain valid, but diversity/independence is weaker.
 5. After the last wave, run `ARENA next`. If an output is missing it sends you back to the same phase, and `prompts` lists only missing jobs. Re-run those once. If a job fails twice, write the single line `NO OUTPUT` into each output file listed by `ARENA check <phase>` and continue. A missing attack counts as no attacks. A missing solution loses its match. A judge that fails twice gets a third fresh attempt: never decide a match yourself.
 
@@ -116,7 +131,8 @@ The order `next` takes you through:
 After each `advance`, give the user one line, such as "Round 2 done: 25 of 100 left." Nothing more.
 Never paste pairings, attacks, verdicts or solutions into the chat.
 
-Why waves: hosts differ in concurrency limits. The `--wave` setting is bookkeeping for safe batching; keep it conservative unless the active runtime explicitly supports higher concurrency.
+Why waves: hosts and tasks expose different concurrency limits. Adapt to the current runtime rather
+than hardcoding either 3 or 10 workers.
 
 ## Step 5: the result
 
@@ -126,7 +142,7 @@ solution file you read in the whole run. Give the user:
 1. **The winning solution**, in full.
 2. **Why it won**: the attacks it survived, from `winner`, as a short list. Its card on one line
    (reasoning mode + workflow + strategy).
-3. **Rounds**: for example "7 rounds, 100 agents in, 1 left."
+3. **Rounds and cost**: for example "2 rounds, 4 competitors, 19 calls."
 4. **Against the answer you rejected**, if there was one: the final check's scores, honestly. If the
    old answer scored higher, say so plainly and show both.
 5. Where the full record lives: the run folder.

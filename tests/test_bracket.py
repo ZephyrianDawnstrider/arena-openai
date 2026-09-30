@@ -65,7 +65,9 @@ class SimulatedTournament(TempDir):
 
     def run_tournament(self, n, seed):
         d = os.path.join(self.tmp, "run-%d" % n)
-        self.ok("init", "--agents", n, "--seed", seed, "--task", "Simulated task.", "--dir", d)
+        call_budget = B.plan_totals(n)["calls"]
+        self.ok("init", "--agents", n, "--max-calls", call_budget,
+                "--seed", seed, "--task", "Simulated task.", "--dir", d)
         rng = random.Random(seed)
         alive_at_start = []
         while True:
@@ -205,9 +207,9 @@ class Plan(unittest.TestCase):
     def test_numbers(self):
         self.assertEqual(B.bracket_sizes(100), [100, 50, 25, 13, 7, 4, 2, 1])
         t = B.plan_totals(100)
-        self.assertEqual((t["rounds"], t["calls"], t["waves"]), (7, 595, 70))
+        self.assertEqual((t["rounds"], t["calls"], t["waves"]), (7, 595, 155))
         t = B.plan_totals(16)
-        self.assertEqual((t["rounds"], t["calls"], t["waves"]), (4, 91, 16))
+        self.assertEqual((t["rounds"], t["calls"], t["waves"]), (4, 91, 25))
 
 
 class Verdicts(unittest.TestCase):
@@ -336,7 +338,7 @@ class FullPipelineWithFakeAgents(TempDir):
         self.assertTrue(rep["attacks_survived"])
 
     def test_spawn_briefs_share_one_task_and_differ_in_card(self):
-        d = os.path.join(self.tmp, "run16")
+        d = os.path.join(self.tmp, "run2")
         self.ok("init", "--quick", "--seed", 4, "--task", self.TASK, "--dir", d)
         self.ok("prompts", "spawn", "--dir", d)
         blocks, cards = set(), set()
@@ -344,9 +346,9 @@ class FullPipelineWithFakeAgents(TempDir):
             brief = read(os.path.join(d, "prompts", "r0", name))
             blocks.add(brief.split("=== THE TASK (identical for every competitor) ===\n")[1].split("\n=== END")[0])
             cards.add(brief.split("=== YOUR STRATEGY CARD ===")[1].split("=== END OF THE CARD ===")[0])
-        self.assertEqual(len(os.listdir(os.path.join(d, "prompts", "r0"))), 16)
+        self.assertEqual(len(os.listdir(os.path.join(d, "prompts", "r0"))), 2)
         self.assertEqual(blocks, {self.TASK}, "every competitor gets the exact same task text")
-        self.assertEqual(len(cards), 16, "every competitor gets a different card")
+        self.assertEqual(len(cards), 2, "every competitor gets a different card")
 
     def test_unreadable_verdict_is_set_aside_and_rerun(self):
         d = os.path.join(self.tmp, "bad")
@@ -373,10 +375,27 @@ class Guards(TempDir):
         self.assertEqual(cli("init", "--quick", "--agents", 8, "--task", "t", "--dir", d + "4").returncode, 2)
         self.assertEqual(cli("init", "--agents", 4, "--task", "   ", "--dir", d + "5").returncode, 2)
 
-    def test_quick_is_16(self):
+    def test_quick_is_2_and_default_is_4(self):
         d = os.path.join(self.tmp, "quick")
         self.ok("init", "--quick", "--task", "t", "--dir", d)
-        self.assertEqual(load(d)["agents_n"], 16)
+        self.assertEqual(load(d)["agents_n"], 2)
+        default_dir = os.path.join(self.tmp, "default")
+        self.ok("init", "--task", "t", "--dir", default_dir)
+        self.assertEqual(load(default_dir)["agents_n"], 4)
+
+    def test_call_budget_blocks_expensive_runs(self):
+        baseline = os.path.join(self.tmp, "baseline.md")
+        write(baseline, "Earlier answer.")
+        eight = os.path.join(self.tmp, "eight-with-final")
+        self.ok("init", "--agents", 8, "--baseline-file", baseline,
+                "--task", "t", "--dir", eight)
+        blocked = os.path.join(self.tmp, "blocked")
+        result = cli("init", "--agents", 16, "--task", "t", "--dir", blocked)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("above the 44-call limit", result.stderr)
+        allowed = os.path.join(self.tmp, "allowed")
+        self.ok("init", "--agents", 16, "--max-calls", 91, "--task", "t", "--dir", allowed)
+        self.assertEqual(load(allowed)["agents_n"], 16)
 
     def test_record_rejects_an_outsider(self):
         d = os.path.join(self.tmp, "rec")
