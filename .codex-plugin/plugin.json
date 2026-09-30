@@ -1,0 +1,6 @@
+{
+  "name": "arena-openai",
+  "version": "0.1.0",
+  "description": "Tournament-style adversarial answer refinement for ChatGPT and Codex.",
+  "skills": "./skills/"
+}
