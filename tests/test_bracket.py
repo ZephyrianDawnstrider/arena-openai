@@ -207,9 +207,25 @@ class Plan(unittest.TestCase):
     def test_numbers(self):
         self.assertEqual(B.bracket_sizes(100), [100, 50, 25, 13, 7, 4, 2, 1])
         t = B.plan_totals(100)
-        self.assertEqual((t["rounds"], t["calls"], t["waves"]), (7, 595, 155))
+        self.assertEqual((t["rounds"], t["calls"], t["waves"]), (7, 199, 53))
         t = B.plan_totals(16)
-        self.assertEqual((t["rounds"], t["calls"], t["waves"]), (4, 91, 25))
+        self.assertEqual((t["rounds"], t["calls"], t["waves"]), (4, 31, 9))
+        classic = B.plan_totals(100, mode="classic")
+        self.assertEqual((classic["rounds"], classic["calls"], classic["waves"]), (7, 595, 155))
+
+    def test_lean_collapses_each_match_to_one_expert_job(self):
+        data = B.load_strategies()
+        lean = B.new_state(4, 1, data, "/tmp/lean", mode="lean")
+        self.assertEqual(B.phase_jobs(lean, "attack"), [])
+        self.assertEqual(B.phase_jobs(lean, "defend"), [])
+        judges = B.phase_jobs(lean, "judge")
+        self.assertEqual(len(judges), 2)
+        self.assertTrue(all(j["kind"] == "leanjudge" and len(j["outputs"]) == 2 for j in judges))
+
+        classic = B.new_state(4, 1, data, "/tmp/classic", mode="classic")
+        self.assertEqual(len(B.phase_jobs(classic, "attack")), 4)
+        self.assertEqual(len(B.phase_jobs(classic, "defend")), 4)
+        self.assertTrue(all(j["kind"] == "judge" for j in B.phase_jobs(classic, "judge")))
 
 
 class Verdicts(unittest.TestCase):
@@ -276,6 +292,8 @@ class FullPipelineWithFakeAgents(TempDir):
                 v = {"match": j["match"], "scores": {a: s(), b: s()}, "winner": a, "reason": "fake",
                      "survived": ["too short"], "standing": {a: [], b: []}}
                 write(j["outputs"][0], json.dumps(v))
+                if len(j["outputs"]) > 1:
+                    write(j["outputs"][1], "Salt on the long wind, improved in match.")
             elif phase == "final":
                 v = {"scores": {"X": {k: 8 for k, _ in B.WEIGHTS}, "Y": {k: 4 for k, _ in B.WEIGHTS}},
                      "winner": "X", "reason": "fake", "fixed": ["salt"]}
@@ -329,7 +347,7 @@ class FullPipelineWithFakeAgents(TempDir):
         state = load(d)
         champ = state["agents"][state["champion"]]
         self.assertIn(".solution.md", champ["solution"], "the champion carries its revised solution")
-        self.assertIn("revised by %s" % state["champion"], read(champ["solution"]))
+        self.assertIn("improved in match", read(champ["solution"]))
         pair = {read(os.path.join(d, "final", "X.md")).strip(), read(os.path.join(d, "final", "Y.md")).strip()}
         self.assertIn("The sea is big.", pair)
         rep = json.loads(self.ok("winner", "--json", "--dir", d))
@@ -390,11 +408,11 @@ class Guards(TempDir):
         self.ok("init", "--agents", 8, "--baseline-file", baseline,
                 "--task", "t", "--dir", eight)
         blocked = os.path.join(self.tmp, "blocked")
-        result = cli("init", "--agents", 16, "--task", "t", "--dir", blocked)
+        result = cli("init", "--agents", 17, "--task", "t", "--dir", blocked)
         self.assertEqual(result.returncode, 2)
-        self.assertIn("above the 44-call limit", result.stderr)
+        self.assertIn("above the 32-call limit", result.stderr)
         allowed = os.path.join(self.tmp, "allowed")
-        self.ok("init", "--agents", 16, "--max-calls", 91, "--task", "t", "--dir", allowed)
+        self.ok("init", "--agents", 16, "--task", "t", "--dir", allowed)
         self.assertEqual(load(allowed)["agents_n"], 16)
 
     def test_record_rejects_an_outsider(self):
@@ -410,7 +428,7 @@ class Guards(TempDir):
 
     def test_no_em_dashes_anywhere(self):
         for root, dirs, files in os.walk(REPO):
-            dirs[:] = [x for x in dirs if x not in (".git", "__pycache__")]
+            dirs[:] = [x for x in dirs if x not in (".arena", ".git", "__pycache__")]
             for name in files:
                 path = os.path.join(root, name)
                 with open(path, encoding="utf-8", errors="ignore") as fh:

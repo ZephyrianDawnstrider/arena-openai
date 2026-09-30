@@ -19,9 +19,10 @@ own context gets compacted halfway through a 100-agent run.
     python3 bracket.py winner                        # the survivor, what it beat, the attacks it survived
     python3 bracket.py card <agent_id>               # one competitor's strategy card
 
-Phases, in order: spawn, then per round attack, defend, judge; then final (only when
-there is a rejected answer to beat). Every command takes --dir; without it, the run
-named in .arena/LATEST is used.
+Default phases: spawn, then one expert judge-and-improve call per match. `--classic`
+keeps the original attack, defend, judge loop. Final runs only when there is a
+rejected answer to beat. Every command takes --dir; without it, the run named in
+.arena/LATEST is used.
 
 Python 3.8+, standard library only.
 """
@@ -43,13 +44,14 @@ RUBRIC_PATH = os.path.join(HERE, "rubric.md")
 DEFAULT_AGENTS = 4
 QUICK_AGENTS = 2
 DEFAULT_WAVE = 4           # safe fallback; the orchestrator should pass the host capacity
-DEFAULT_MAX_CALLS = 44     # at most an 8-agent tournament plus an optional final check
+DEFAULT_MAX_CALLS = 32     # up to 16 lean competitors plus an optional final check
 ROOT = ".arena"
 LATEST = "LATEST"
 STATE_FILE = "arena.json"
 PHASES = ("spawn", "attack", "defend", "judge", "final")
-TEMPLATES = ("competitor", "attacker", "defender", "judge", "final")
-CALLS_PER_MATCH = 5        # 2 attacks, 2 defenses, 1 judge
+TEMPLATES = ("competitor", "attacker", "defender", "judge", "leanjudge", "final")
+CLASSIC_CALLS_PER_MATCH = 5
+LEAN_CALLS_PER_MATCH = 1
 
 # Mirrors the table in rubric.md. tests/test_bracket.py checks they agree.
 WEIGHTS = (
@@ -249,6 +251,10 @@ def revised_out(d, rnd, mid, aid):
     return os.path.join(d, "r%d" % rnd, "%s.%s.solution.md" % (mid, aid))
 
 
+def synthesized_out(d, rnd, mid):
+    return os.path.join(d, "r%d" % rnd, "%s.winner.solution.md" % mid)
+
+
 def verdict_out(d, rnd, mid):
     return os.path.join(d, "r%d" % rnd, "%s.verdict.json" % mid)
 
@@ -268,7 +274,7 @@ def _has_output(path):
 
 # ---------------------------------------------------------------- the bracket
 
-def new_state(n, seed, data, run_dir, wave=DEFAULT_WAVE, has_baseline=False):
+def new_state(n, seed, data, run_dir, wave=DEFAULT_WAVE, has_baseline=False, mode="lean"):
     run_dir = os.path.abspath(run_dir)
     ids = agent_ids(n)
     agents = {}
@@ -292,6 +298,7 @@ def new_state(n, seed, data, run_dir, wave=DEFAULT_WAVE, has_baseline=False):
         "agents_n": n,
         "cards_available": combo_count(data),
         "wave": wave,
+        "mode": mode,
         "dir": run_dir,
         "has_baseline": bool(has_baseline),
         "agents": agents,
@@ -418,10 +425,15 @@ def advance(state):
         loser["alive"] = False
         loser["eliminated_in"] = rd["n"]
         loser["eliminated_by"] = m["winner"]
-        for aid in (m["a"], m["b"]):
-            rev = revised_out(state["dir"], rd["n"], m["id"], aid)
-            if _has_output(rev):
-                state["agents"][aid]["solution"] = rev
+        if state.get("mode", "classic") == "lean":
+            revised = synthesized_out(state["dir"], rd["n"], m["id"])
+            if _has_output(revised):
+                state["agents"][m["winner"]]["solution"] = revised
+        else:
+            for aid in (m["a"], m["b"]):
+                rev = revised_out(state["dir"], rd["n"], m["id"], aid)
+                if _has_output(rev):
+                    state["agents"][aid]["solution"] = rev
         survivors.append(m["winner"])
     if rd["bye"]:
         state["agents"][rd["bye"]]["byes"] += 1
@@ -618,6 +630,9 @@ def phase_jobs(state, phase):
             if m["winner"]:
                 continue
             a, b = m["a"], m["b"]
+            mode = state.get("mode", "classic")
+            if phase in ("attack", "defend") and mode == "lean":
+                continue
             if phase == "attack":
                 for me, opp in ((a, b), (b, a)):
                     jobs.append({"id": "%s.%s.attack" % (m["id"], me), "kind": "attacker", "round": n,
@@ -629,9 +644,12 @@ def phase_jobs(state, phase):
                                  "agent": me, "opponent": opp, "match": m["id"],
                                  "outputs": [defense_out(d, n, m["id"], me), revised_out(d, n, m["id"], me)]})
             else:
-                jobs.append({"id": "%s.judge" % m["id"], "kind": "judge", "round": n,
-                             "match": m["id"], "a": a, "b": b,
-                             "outputs": [verdict_out(d, n, m["id"])]})
+                kind = "leanjudge" if mode == "lean" else "judge"
+                outputs = [verdict_out(d, n, m["id"])]
+                if mode == "lean":
+                    outputs.append(synthesized_out(d, n, m["id"]))
+                jobs.append({"id": "%s.judge" % m["id"], "kind": kind, "round": n,
+                             "match": m["id"], "a": a, "b": b, "outputs": outputs})
     for j in jobs:
         j["prompt"] = prompt_path(d, j["round"], j["id"])
     return jobs
@@ -715,6 +733,11 @@ def render_job(state, job, templates, task):
                  first_attacks=attack_out(d, n, mid, b), second_attacks=attack_out(d, n, mid, a),
                  first_defense=defense_out(d, n, mid, a), second_defense=defense_out(d, n, mid, b),
                  out=job["outputs"][0])
+    elif kind == "leanjudge":
+        n, mid, a, b = job["round"], job["match"], job["a"], job["b"]
+        v.update(match=mid, round=n, first=a, second=b,
+                 first_solution=agents[a]["solution"], second_solution=agents[b]["solution"],
+                 out=job["outputs"][0], solution_out=job["outputs"][1])
     elif kind == "final":
         v.update(rounds=rounds_played(state),
                  x_solution=os.path.join(d, "final", "X.md"),
@@ -765,7 +788,8 @@ def next_action(state):
             left = missing_jobs(jobs)
             return ("final", left, jobs) if left else ("collect", [], jobs)
         return "done", [], []
-    for phase in ("attack", "defend", "judge"):
+    phases = ("judge",) if state.get("mode", "classic") == "lean" else ("attack", "defend", "judge")
+    for phase in phases:
         jobs = phase_jobs(state, phase)
         left = missing_jobs(jobs)
         if left:
@@ -778,18 +802,23 @@ def next_action(state):
 
 # ---------------------------------------------------------------- plan
 
-def plan_rows(n, wave=DEFAULT_WAVE):
+def plan_rows(n, wave=DEFAULT_WAVE, mode="lean"):
     rows = []
     for rnd, alive in enumerate(bracket_sizes(n)[:-1], start=1):
         m = alive // 2
-        waves = 2 * math.ceil(2 * m / wave) + math.ceil(m / wave)
+        if mode == "lean":
+            calls = LEAN_CALLS_PER_MATCH * m
+            waves = math.ceil(m / wave)
+        else:
+            calls = CLASSIC_CALLS_PER_MATCH * m
+            waves = 2 * math.ceil(2 * m / wave) + math.ceil(m / wave)
         rows.append({"round": rnd, "alive": alive, "matches": m, "bye": alive % 2,
-                     "calls": CALLS_PER_MATCH * m, "waves": waves})
+                     "calls": calls, "waves": waves})
     return rows
 
 
-def plan_totals(n, wave=DEFAULT_WAVE):
-    rows = plan_rows(n, wave)
+def plan_totals(n, wave=DEFAULT_WAVE, mode="lean"):
+    rows = plan_rows(n, wave, mode)
     calls = n + sum(r["calls"] for r in rows)
     waves = math.ceil(n / wave) + sum(r["waves"] for r in rows)
     return {"agents": n, "rounds": len(rows), "calls": calls, "waves": waves, "rows": rows}
@@ -847,11 +876,12 @@ def cmd_plan(args):
     n = _agents_arg(args)
     if n < 1:
         raise ArenaError("--agents must be at least 1")
-    t = plan_totals(n, args.wave)
+    mode = "classic" if args.classic else "lean"
+    t = plan_totals(n, args.wave, mode)
     if args.json:
         print(json.dumps(t, indent=1))
         return 0
-    print("%d agents, %d rounds, waves of %d" % (n, t["rounds"], args.wave))
+    print("%d agents, %d rounds, %s mode, waves of %d" % (n, t["rounds"], mode, args.wave))
     print("")
     print("  round  alive  matches  bye  sub-agent calls  waves")
     print("  spawn  %5d  %7s  %3s  %15d  %5d" % (n, "-", "-", n, math.ceil(n / args.wave)))
@@ -888,7 +918,8 @@ def cmd_init(args):
             baseline = fh.read().strip()
         if not baseline:
             raise ArenaError("the baseline file is empty")
-    totals = plan_totals(n, args.wave)
+    mode = "classic" if args.classic else "lean"
+    totals = plan_totals(n, args.wave, mode)
     planned_calls = totals["calls"] + (1 if baseline else 0)
     if planned_calls > args.max_calls:
         raise ArenaError(
@@ -912,7 +943,7 @@ def cmd_init(args):
     with open(RUBRIC_PATH, encoding="utf-8") as src, \
             open(os.path.join(d, "rubric.md"), "w", encoding="utf-8") as dst:
         dst.write(src.read())
-    state = new_state(n, seed, data, d, wave=args.wave, has_baseline=bool(baseline))
+    state = new_state(n, seed, data, d, wave=args.wave, has_baseline=bool(baseline), mode=mode)
     save_state(state)
     if default_dir:
         os.makedirs(ROOT, exist_ok=True)
@@ -920,8 +951,8 @@ def cmd_init(args):
             fh.write(d + "\n")
     t = totals
     print("arena ready: %s" % d)
-    print("seed %s. %d agents, %d distinct cards dealt from %d, no repeats."
-          % (seed, n, n, combo_count(data)))
+    print("seed %s. %d agents, %s mode, %d distinct cards dealt from %d, no repeats."
+          % (seed, n, mode, n, combo_count(data)))
     print("%d rounds (%s). %d sub-agent calls in %d waves of %d%s."
           % (t["rounds"], " -> ".join(str(s) for s in bracket_sizes(n)), t["calls"] + (1 if baseline else 0),
              t["waves"] + (1 if baseline else 0), args.wave, ", including the final check" if baseline else ""))
@@ -1179,6 +1210,7 @@ def build_parser():
     s = sub.add_parser("plan", help="rounds, sub-agent calls and waves for N agents")
     s.add_argument("--agents", type=int)
     s.add_argument("--quick", action="store_true")
+    s.add_argument("--classic", action="store_true", help="use the original five-call match flow")
     s.add_argument("--wave", type=int, default=DEFAULT_WAVE)
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_plan)
@@ -1186,6 +1218,7 @@ def build_parser():
     s = sub.add_parser("init", parents=[common], help="deal the cards and write arena.json")
     s.add_argument("--agents", type=int, help="number of competitors (default %d)" % DEFAULT_AGENTS)
     s.add_argument("--quick", action="store_true", help="%d competitors" % QUICK_AGENTS)
+    s.add_argument("--classic", action="store_true", help="use the original attack, defend, judge flow")
     s.add_argument("--seed", type=int, help="fixes the cards and the pairings (default: random, recorded)")
     s.add_argument("--task-file", help="the task, word for word, as every competitor will get it")
     s.add_argument("--task", help="the task as a string, instead of --task-file")

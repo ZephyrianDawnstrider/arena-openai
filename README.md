@@ -29,7 +29,7 @@ The portable plugin is rooted at this repository. The compatibility manifest als
 ```json
 {
   "name": "arena-openai",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Tournament-style answer refinement for ChatGPT and Codex.",
   "skills": "./skills/"
 }
@@ -49,23 +49,36 @@ Run an arena with 8 competitors for this difficult debugging problem: ...
 
 ## Modes
 
-- default: 4 competitors, 19 calls
-- `--quick`: 2 competitors, 7 calls
+- default: 4 competitors, 7 calls
+- `--quick`: 2 competitors, 3 calls
+- `--classic`: original attack, defend, judge flow; 19 calls with 4 competitors
 - `--agents N`: choose the competitor count
 - `--seed S`: reproducible cards and bracket
 - `--wave W`: jobs grouped per orchestration wave; set it to current host capacity
-- `--max-calls C`: hard call budget; default 44
+- `--max-calls C`: hard call budget; default 32
 
-The engine refuses runs above 44 calls unless the caller explicitly raises `--max-calls`. That keeps
-plain-language Arena requests within 8 competitors, including one optional final check. The historical 100-competitor mode requires 595
-calls and should be used only after explicit cost approval.
+The default engine uses one expert judge-and-improve call per match. It refuses runs above 32 calls
+unless the caller explicitly raises `--max-calls`. Four competitors now need 7 calls instead of 19;
+eight need 15 instead of 43. The historical 100-competitor classic mode requires 595 calls and should
+be used only after explicit cost approval.
+
+### Benchmark against the original flow
+
+We ran both flows on the same two independently generated answers to a production PostgreSQL migration
+task, with the same task, candidates, rubric, and Astra-class judging tier. The original attack,
+defend, judge flow used 7 calls; the default judge-and-improve flow used 3, a 57% reduction. A separate
+blind evaluator preferred the optimized answer (46/50 versus 42/50), citing better completeness,
+specificity, and rollback safety. This is one controlled benchmark, not a universal quality guarantee;
+`--classic` remains available for unusually adversarial work.
 
 ## Codex model and concurrency policy
 
 Arena adapts to the current runtime rather than assuming every Codex task has the same worker limit.
-Fast, economical models are appropriate for candidate, attack, and defense jobs. When worker-specific
-model selection is available, the judge and final comparison should prefer `gpt-6-astra` unless the
-user chose another model. Model selection does not create additional concurrent worker slots.
+Balanced Sol-class models are appropriate for candidates. When worker-specific model selection is
+available, the judge-and-improve and final comparison should prefer `gpt-6-astra` unless the user
+chose another model. This is the quality, cost, and latency sweet spot: capable diverse drafts plus a
+strong decision-maker, without five model calls per match. Model selection does not create additional
+concurrent worker slots.
 
 ## Safety / project isolation
 

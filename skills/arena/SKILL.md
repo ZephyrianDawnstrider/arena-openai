@@ -42,10 +42,11 @@ Read the flags out of the request. Everything that is not a flag is the task.
 | flag | meaning |
 | --- | --- |
 | `--agents N` | Explicit competitor count. |
-| `--quick` | 2 competitors, 1 round, 7 calls. |
+| `--quick` | 2 competitors, 1 round, 3 calls. |
+| `--classic` | Original attack, defend, judge flow; 5 calls per match. |
 | `--seed S` | Fixes the cards and the pairings. Default: random, and recorded. |
 | `--wave W` | Maximum jobs launched together. Clamp this to available worker capacity. |
-| `--max-calls C` | Explicit call budget. Default 44, enough for 8 competitors plus a final check. |
+| `--max-calls C` | Explicit call budget. Default 32. |
 
 No task text means the task is the user's most recent request. Treat the last answer as the baseline
 only when the user rejected it.
@@ -55,7 +56,7 @@ recommendation, or narrow factual task; 4 for normal analysis, planning, debuggi
 8 only for genuinely difficult, high-impact, or strongly ambiguous work.
 
 Run `ARENA plan --agents N --wave W` before initialization and tell the user the competitor count,
-rounds, and calls in one short line. Do not exceed 8 competitors or 44 planned calls without showing
+rounds, and calls in one short line. Do not exceed 8 competitors or 32 planned calls without showing
 the exact cost and receiving explicit approval. The engine enforces this through `--max-calls`;
 raise it only after approval. Never silently start the historical 100-agent, 595-call mode.
 
@@ -98,8 +99,8 @@ repeats, pairs round 1, and writes `arena.json`.
 
 Use model capability where it changes the result instead of multiplying expensive calls:
 
-- Competitor, attack, and defend jobs use the lowest-cost available model that can reliably handle
-  the task. Preserve an explicit model choice from the user.
+- Competitor jobs prefer `gpt-6-sol` or the closest capable balanced model. Attack and defend jobs
+  exist only in `--classic` mode and use the same tier. Preserve an explicit model choice from the user.
 - Judge and final jobs prefer `gpt-6-astra` when available and when the user has not requested a
   different model. A stronger judge is more valuable than dozens of extra competitors.
 - If the host cannot select models per worker, use its current model and disclose that limitation.
@@ -122,8 +123,9 @@ Every phase that runs competitors or judges works the same way:
 The order `next` takes you through:
 
 - **spawn**, once: every competitor writes its own solution to the task.
-- then every round: **attack** (two per match) → **defend** (two per match) → **judge** (one per
-  match) → `ARENA collect` → `ARENA advance`.
+- default per round: one Astra **judge-and-improve** call per match, then `ARENA collect` and
+  `ARENA advance`. The judge selects the better candidate and writes its improved complete answer.
+- `--classic` per round: **attack** (two per match), **defend** (two per match), then **judge**.
 - **final**, once, only when there is a baseline: a judge compares the champion with the answer the
   user rejected, blind to which is which. Then `ARENA collect`.
 - `next` prints DONE: go to step 5.
@@ -142,7 +144,7 @@ solution file you read in the whole run. Give the user:
 1. **The winning solution**, in full.
 2. **Why it won**: the attacks it survived, from `winner`, as a short list. Its card on one line
    (reasoning mode + workflow + strategy).
-3. **Rounds and cost**: for example "2 rounds, 4 competitors, 19 calls."
+3. **Rounds and cost**: for example "2 rounds, 4 competitors, 7 calls."
 4. **Against the answer you rejected**, if there was one: the final check's scores, honestly. If the
    old answer scored higher, say so plainly and show both.
 5. Where the full record lives: the run folder.
@@ -283,7 +285,55 @@ DEFENDED {{agent}} conceded <n> rebutted <n>
 ```
 <!-- /template:defender -->
 
-### Judge, one per match
+### Lean judge and improver, one per match by default
+
+<!-- template:leanjudge -->
+```text
+You are the expert judge and final editor for match {{match}}, round {{round}}. Two independent
+candidates answered the same task. Select the stronger foundation using the rubric, then produce one
+complete improved answer. This single careful pass replaces separate attack and defense calls.
+
+=== THE TASK ===
+{{task}}
+=== END OF THE TASK ===
+
+Read the rubric first: {{rubric}}
+
+Candidate {{first}}: {{first_solution}}
+Candidate {{second}}: {{second_solution}}
+
+Work as a skeptical domain expert:
+1. Read both candidates fully and test their important claims, requirements, edge cases, and usability.
+2. Score both from 0 to 10 on every rubric criterion. Mark fatal only for a verified flaw that makes
+   the candidate wrong or unusable.
+3. Select the winner using the weighted rubric. On a tie, prefer higher correctness, then the clearer
+   and more directly usable answer.
+4. Write a standalone improved version of the winner. Fix every verified weakness you found and use
+   a valid strength from the other candidate when it materially improves the answer. Do not mention
+   the arena, candidates, scores, or this judging process in the improved answer.
+5. Do not create, edit, or delete anything outside {{arena_dir}}.
+
+Write the improved answer to {{solution_out}}.
+
+Write this JSON, and nothing else, to {{out}}:
+{
+  "match": "{{match}}",
+  "scores": {
+    "{{first}}": {"correctness": 0, "completeness": 0, "specificity": 0, "robustness": 0, "clarity": 0, "fatal": false},
+    "{{second}}": {"correctness": 0, "completeness": 0, "specificity": 0, "robustness": 0, "clarity": 0, "fatal": false}
+  },
+  "winner": "{{first}} or {{second}}",
+  "reason": "one sentence: the decisive difference",
+  "survived": ["important weakness checked and fixed"],
+  "standing": {"{{first}}": ["remaining flaws"], "{{second}}": ["remaining flaws"]}
+}
+
+When both files are written, reply with this one line and nothing else:
+WINNER <winner id> <winner total>-<loser total>
+```
+<!-- /template:leanjudge -->
+
+### Classic judge, one per match with `--classic`
 
 <!-- template:judge -->
 ```text
