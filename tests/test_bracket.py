@@ -6,6 +6,7 @@ The headline test drives a full 100-agent tournament through the real command
 line with random winners and checks it ends with exactly one survivor.
 """
 import collections
+import copy
 import json
 import os
 import random
@@ -83,6 +84,9 @@ class SimulatedTournament(TempDir):
             self.assertEqual(len(in_round), len(set(in_round)))
             for m in rd["matches"]:
                 self.ok("record", m["id"], rng.choice([m["a"], m["b"]]), "--reason", "simulated", "--dir", d)
+                synthesized = B.synthesized_out(d, rd["n"], m["id"])
+                os.makedirs(os.path.dirname(synthesized), exist_ok=True)
+                write(synthesized, "simulated synthesis")
             self.ok("advance", "--dir", d)
         alive_at_start.append(1)
         return d, load(d), alive_at_start
@@ -141,6 +145,9 @@ class SimulatedTournament(TempDir):
                     sizes.append(len(rd["alive"]))
                     for m in rd["matches"]:
                         B.record(st, m["id"], rng.choice([m["a"], m["b"]]))
+                        synthesized = B.synthesized_out(st["dir"], rd["n"], m["id"])
+                        os.makedirs(os.path.dirname(synthesized), exist_ok=True)
+                        write(synthesized, "simulated synthesis")
                     B.advance(st)
                 self.assertEqual(sizes + [1], B.bracket_sizes(n))
                 self.assertEqual(len(B.alive_ids(st)), 1)
@@ -242,6 +249,23 @@ class Verdicts(unittest.TestCase):
         self.assertEqual(B.weighted_total(self.scores(10, 10, 10, 10, 10)), 100.0)
         self.assertEqual(B.weighted_total(self.scores(8, 6, 7, 5, 9)), 68.5)   # (240 + 150 + 105 + 100 + 90) / 10
         self.assertIsNone(B.weighted_total({"correctness": 8}))
+
+    def test_present_invalid_scores_are_rejected_without_clamping(self):
+        for value in (True, -0.1, 10.1, float("nan"), float("inf"), "NaN"):
+            with self.subTest(value=value):
+                with self.assertRaises(B.ArenaError):
+                    B.weighted_total({"correctness": value})
+        self.assertIsNone(B.weighted_total({"correctness": 8}))
+
+    def test_verdict_identity_rejects_foreign_and_duplicate_keys(self):
+        with self.assertRaisesRegex(B.ArenaError, "match id"):
+            B.validate_verdict_identity({"match": "r1-m2"}, "r1-m1", ("a001", "a002"))
+        with self.assertRaisesRegex(B.ArenaError, "unrelated"):
+            B.validate_verdict_identity({"match": "r1-m1", "scores": {"a003": 8}},
+                                        "r1-m1", ("a001", "a002"))
+        with self.assertRaisesRegex(B.ArenaError, "duplicate"):
+            B.validate_verdict_identity({"match": "r1-m1", "standing": {"A001": [], "a001": []}},
+                                        "r1-m1", ("a001", "a002"))
 
     def test_scores_beat_the_judges_pick(self):
         v = {"scores": {"a001": self.scores(5, 5, 5, 5, 5), "a002": self.scores(8, 8, 8, 8, 8)}, "winner": "a001"}
@@ -382,8 +406,109 @@ class FullPipelineWithFakeAgents(TempDir):
         self.assertFalse(os.path.exists(path))
         self.assertTrue(os.path.exists(path + ".unreadable"))
 
+    def test_quarantining_retries_preserves_prior_rejected_evidence(self):
+        d = os.path.join(self.tmp, "bad-retries")
+        self.ok("init", "--agents", 2, "--seed", 1, "--task", "t", "--dir", d)
+        state = load(d)
+        m = state["rounds"][0]["matches"][0]
+        path = B.verdict_out(d, 1, m["id"])
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        bad = json.dumps({"match": "r1-other", "winner": m["a"]})
+        write(path, bad)
+        self.assertEqual(cli("collect", "--dir", d).returncode, 1)
+        self.assertEqual(read(path + ".unreadable"), bad)
+        write(path, bad)
+        self.assertEqual(cli("collect", "--dir", d).returncode, 1)
+        self.assertEqual(read(path + ".unreadable"), bad)
+        self.assertEqual(read(path + ".unreadable.1"), bad)
+
+    def test_lean_collect_and_advance_require_synthesized_output(self):
+        d = os.path.join(self.tmp, "lean-missing-synth")
+        self.ok("init", "--agents", 2, "--seed", 1, "--task", "t", "--dir", d)
+        state = load(d)
+        m = state["rounds"][0]["matches"][0]
+        path = B.verdict_out(d, 1, m["id"])
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        verdict = {"match": m["id"], "winner": m["a"], "scores": {}}
+        write(path, json.dumps(verdict))
+        result = cli("collect", "--dir", d)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("synthesized solution is missing", result.stdout)
+        self.assertIsNone(load(d)["rounds"][0]["matches"][0]["winner"])
+        B.record(state, m["id"], m["a"])
+        before = copy.deepcopy(state)
+        with self.assertRaisesRegex(B.ArenaError, "synthesized solution"):
+            B.advance(state)
+        self.assertEqual(state, before)
+
 
 class Guards(TempDir):
+    def test_state_validation_accepts_legacy_and_completed_classic_states(self):
+        d = os.path.join(self.tmp, "classic-state")
+        self.ok("init", "--classic", "--agents", 2, "--seed", -1,
+                "--baseline-file", self._baseline_file(), "--task", "t", "--dir", d)
+        state = load(d)
+        state.pop("mode")  # v1 states predating the mode field mean classic.
+        with open(os.path.join(d, "arena.json"), "w", encoding="utf-8") as fh:
+            json.dump(state, fh)
+        self.assertEqual(cli("status", "--dir", d).returncode, 0)
+        B.record(state, state["rounds"][0]["matches"][0]["id"], "a001")
+        B.advance(state)
+        self.assertEqual(B.validate_state(state, "arena.json", d), state)
+        missing_champion = copy.deepcopy(state)
+        missing_champion["champion"] = None
+        with self.assertRaisesRegex(B.ArenaError, "closed final round"):
+            B.validate_state(missing_champion, "arena.json", d)
+        malformed_result = copy.deepcopy(state)
+        malformed_result["final"]["result"] = {"better": "champion"}
+        with self.assertRaisesRegex(B.ArenaError, "final comparison"):
+            B.validate_state(malformed_result, "arena.json", d)
+        huge_score = copy.deepcopy(state)
+        huge_score["final"]["result"] = {"better": "champion", "reason": "", "fixed": [],
+                                           "champion_total": 10 ** 1000, "baseline_total": None}
+        with self.assertRaisesRegex(B.ArenaError, "final comparison"):
+            B.validate_state(huge_score, "arena.json", d)
+
+    def _baseline_file(self):
+        path = os.path.join(self.tmp, "baseline.md")
+        write(path, "Baseline answer")
+        return path
+
+    def test_invalid_state_is_friendly_and_preserved(self):
+        d = os.path.join(self.tmp, "invalid-state")
+        self.ok("init", "--agents", 2, "--task", "t", "--dir", d)
+        path = os.path.join(d, "arena.json")
+        state = load(d)
+        state["version"] = True
+        write(path, json.dumps(state))
+        original = read(path)
+        result = cli("status", "--dir", d)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("invalid arena state", result.stderr)
+        self.assertEqual(read(path), original)
+
+    def test_state_agent_count_is_checked_before_id_generation(self):
+        d = os.path.join(self.tmp, "huge-count-state")
+        self.ok("init", "--agents", 2, "--task", "t", "--dir", d)
+        path = os.path.join(d, "arena.json")
+        state = load(d)
+        state["agents_n"] = 10 ** 9
+        write(path, json.dumps(state))
+        result = cli("status", "--dir", d)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("agents must contain the expected IDs", result.stderr)
+
+    def test_state_with_multiple_agents_cannot_omit_rounds(self):
+        d = os.path.join(self.tmp, "missing-round-state")
+        self.ok("init", "--agents", 2, "--task", "t", "--dir", d)
+        path = os.path.join(d, "arena.json")
+        state = load(d)
+        state["rounds"] = []
+        write(path, json.dumps(state))
+        result = cli("status", "--dir", d)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("must have a round", result.stderr)
+
     def test_init_refuses_to_overwrite_and_bad_sizes(self):
         d = os.path.join(self.tmp, "run")
         self.ok("init", "--agents", 4, "--task", "t", "--dir", d)

@@ -15,10 +15,10 @@ EXPECTED = {"arena/SKILL.md", "arena/rubric.md", "arena/bracket.py",
 class PackageSkill(unittest.TestCase):
     def test_versioned_zip_contains_installable_payload(self):
         with tempfile.TemporaryDirectory(prefix="arena-package-") as temp:
-            result = subprocess.run([sys.executable, PACKAGER, "--tag", "v0.3.1",
+            result = subprocess.run([sys.executable, PACKAGER, "--tag", "v0.3.2",
                                      "--output-dir", temp], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            archive = os.path.join(temp, "arena-skill-v0.3.1.zip")
+            archive = os.path.join(temp, "arena-skill-v0.3.2.zip")
             with zipfile.ZipFile(archive) as package:
                 self.assertEqual(set(package.namelist()), EXPECTED)
                 for name in ("LICENSE", "CREDITS.md"):

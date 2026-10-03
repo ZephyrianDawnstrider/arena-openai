@@ -32,7 +32,7 @@ def package(tag, output_dir):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--tag", required=True, help="published release tag, such as v0.3.1")
+    parser.add_argument("--tag", required=True, help="published release tag, such as v0.3.2")
     parser.add_argument("--output-dir", default="dist")
     args = parser.parse_args()
     print("Created " + package(args.tag, os.path.abspath(args.output_dir)))

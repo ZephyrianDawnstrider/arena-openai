@@ -1,6 +1,6 @@
 {
   "name": "arena-openai",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Budgeted tournaments for refining answers in ChatGPT and Codex.",
   "skills": "./skills/"
 }

@@ -2,6 +2,14 @@
 
 This file records published release notes for the project.
 
+## v0.3.2 - released, 2026-10-03
+
+- Reject malformed score values and verdicts that identify a different match or unrelated participants; preserve each quarantined verdict.
+- Require synthesized winner solutions throughout lean collection and advancement.
+- Validate saved state before use and report malformed or mismatched state without rewriting it.
+- Add regression coverage for validation, recovery evidence, and unchanged call-budget contracts.
+- Align both plugin manifests and the skill archive test with version 0.3.2.
+
 ## v0.3.1 - released, 2026-10-03
 
 - Clarify the default lean, quick, classic, and maximum planned-call budgets.

@@ -415,6 +415,12 @@ def advance(state):
     rd = current_round(state)
     if rd is None:
         raise ArenaError("no round is open" + (" (the arena has a champion)" if state["champion"] else ""))
+    if state.get("mode", "classic") == "lean":
+        missing = [m["id"] for m in rd["matches"]
+                   if not _has_output(synthesized_out(state["dir"], rd["n"], m["id"]))]
+        if missing:
+            raise ArenaError("cannot advance lean round %d; synthesized solution missing for: %s"
+                             % (rd["n"], ", ".join(missing)))
     unrecorded = [m["id"] for m in rd["matches"] if not m["winner"]]
     if unrecorded:
         raise ArenaError("round %d has %d unrecorded match(es): %s"
@@ -427,8 +433,7 @@ def advance(state):
         loser["eliminated_by"] = m["winner"]
         if state.get("mode", "classic") == "lean":
             revised = synthesized_out(state["dir"], rd["n"], m["id"])
-            if _has_output(revised):
-                state["agents"][m["winner"]]["solution"] = revised
+            state["agents"][m["winner"]]["solution"] = revised
         else:
             for aid in (m["a"], m["b"]):
                 rev = revised_out(state["dir"], rd["n"], m["id"], aid)
@@ -455,18 +460,29 @@ def alive_ids(state):
 
 def weighted_total(scores):
     """0 to 100 from five 0 to 10 scores, weighted as in rubric.md. None if any is missing."""
-    if not isinstance(scores, dict):
+    if scores is None:
         return None
+    if not isinstance(scores, dict):
+        raise ArenaError("scores must be a JSON object")
     total = 0.0
+    values = {}
     for key, weight in WEIGHTS:
-        v = scores.get(key)
+        if key not in scores:
+            continue
+        v = scores[key]
         if isinstance(v, bool):
-            return None
+            raise ArenaError("score '%s' must be a number from 0 to 10" % key)
         try:
             v = float(v)
-        except (TypeError, ValueError):
-            return None
-        total += max(0.0, min(10.0, v)) * weight
+        except (OverflowError, TypeError, ValueError):
+            raise ArenaError("score '%s' must be a finite number from 0 to 10" % key)
+        if not math.isfinite(v) or v < 0 or v > 10:
+            raise ArenaError("score '%s' must be a finite number from 0 to 10" % key)
+        values[key] = v
+    if len(values) != len(WEIGHTS):
+        return None
+    for key, weight in WEIGHTS:
+        total += values[key] * weight
     return round(total / 10.0, 2)
 
 
@@ -502,8 +518,10 @@ def decide(verdict, a, b):
     """
     if not isinstance(verdict, dict):
         raise ArenaError("verdict is not a JSON object")
-    raw_scores = verdict.get("scores") or {}
-    scores = {str(k).strip().lower(): v for k, v in raw_scores.items()} if isinstance(raw_scores, dict) else {}
+    raw_scores = verdict.get("scores", {})
+    if not isinstance(raw_scores, dict):
+        raise ArenaError("verdict scores must be a JSON object")
+    scores = {str(k).strip().lower(): v for k, v in raw_scores.items()}
     sa, sb = scores.get(a), scores.get(b)
     pick_raw = str(verdict.get("winner") or "").strip().lower()
     in_a = re.search(r"\b%s\b" % re.escape(a), pick_raw) is not None
@@ -540,6 +558,58 @@ def decide(verdict, a, b):
     return winner, totals, note
 
 
+def validate_verdict_identity(verdict, match_id, participants):
+    """Reject verdicts copied from another match or naming unrelated contestants."""
+    if not isinstance(verdict, dict):
+        raise ArenaError("verdict is not a JSON object")
+    allowed = {str(a).strip().lower() for a in participants}
+    if match_id is not None:
+        actual = verdict.get("match")
+        if not isinstance(actual, str) or actual.strip().lower() != match_id.lower():
+            raise ArenaError("verdict match id does not match %s" % match_id)
+    for field in ("scores", "standing"):
+        if field not in verdict:
+            continue
+        mapping = verdict[field]
+        if not isinstance(mapping, dict):
+            raise ArenaError("verdict %s must be a JSON object" % field)
+        keys = [str(k).strip().lower() for k in mapping]
+        if len(keys) != len(set(keys)):
+            raise ArenaError("verdict %s contains duplicate participant keys" % field)
+        foreign = sorted(set(keys) - allowed)
+        if foreign:
+            raise ArenaError("verdict %s names unrelated participant(s): %s"
+                             % (field, ", ".join(foreign)))
+    winner = verdict.get("winner")
+    if isinstance(winner, str):
+        ids = re.findall(r"\ba\d+\b", winner.lower())
+        foreign = sorted(set(ids) - allowed)
+        if foreign:
+            raise ArenaError("verdict winner names unrelated participant(s): %s"
+                             % ", ".join(foreign))
+    return verdict
+
+
+def quarantine_verdict(path):
+    """Move a rejected verdict aside without replacing earlier rejected evidence."""
+    base = path + ".unreadable"
+    suffix = 0
+    while True:
+        target = base if suffix == 0 else "%s.%d" % (base, suffix)
+        try:
+            fd = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            suffix += 1
+            continue
+        os.close(fd)
+        try:
+            os.replace(path, target)
+        except OSError:
+            os.unlink(target)
+            raise
+        return target
+
+
 def collect(state):
     """Record every verdict the judges have written for the open round (or the final
     check). An unreadable verdict is set aside as <name>.unreadable so the judge job
@@ -556,11 +626,12 @@ def collect(state):
         with open(path, encoding="utf-8", errors="replace") as fh:
             v = extract_json(fh.read())
         try:
+            validate_verdict_identity(v, None, ("x", "y"))
             if isinstance(v, dict) and isinstance(v.get("scores"), dict):
                 v = dict(v, scores={str(k).strip().lower(): s for k, s in v["scores"].items()})
             w, totals, note = decide(v, "x", "y")
         except ArenaError as e:
-            os.replace(path, path + ".unreadable")
+            quarantine_verdict(path)
             return [("final", "unreadable", str(e))]
         better = fin[w.upper()]
         fin["result"] = {
@@ -584,11 +655,17 @@ def collect(state):
         with open(path, encoding="utf-8", errors="replace") as fh:
             v = extract_json(fh.read())
         try:
+            validate_verdict_identity(v, m["id"], (m["a"], m["b"]))
             winner, totals, note = decide(v, m["a"], m["b"])
         except ArenaError as e:
-            os.replace(path, path + ".unreadable")
+            quarantine_verdict(path)
             results.append((m["id"], "unreadable", str(e)))
             continue
+        if state.get("mode", "classic") == "lean":
+            synthesized = synthesized_out(d, rd["n"], m["id"])
+            if not _has_output(synthesized):
+                results.append((m["id"], "missing", "synthesized solution is missing"))
+                continue
         survived = v.get("survived") if isinstance(v.get("survived"), list) else []
         record(state, m["id"], winner,
                reason=str(v.get("reason") or "")[:400],
@@ -836,13 +913,148 @@ def run_dir_from(args):
     raise ArenaError("no arena here. Run init first, or pass --dir")
 
 
+def _state_error(path, reason):
+    raise ArenaError("invalid arena state %s: %s" % (path, reason))
+
+
+def validate_state(state, path, run_dir):
+    """Check the persisted v1 shape and bracket invariants before commands use it."""
+    if not isinstance(state, dict):
+        _state_error(path, "top level must be a JSON object")
+    required = ("version", "created", "seed", "agents_n", "cards_available", "wave",
+                "dir", "has_baseline", "agents", "rounds", "champion", "final")
+    missing = [key for key in required if key not in state]
+    if missing:
+        _state_error(path, "missing field(s): %s" % ", ".join(missing))
+    if type(state["version"]) is not int or state["version"] != 1:
+        _state_error(path, "unsupported state version %r (expected 1)" % state["version"])
+    for key in ("agents_n", "cards_available", "wave", "seed"):
+        if type(state[key]) is not int or (key != "seed" and state[key] < 1):
+            _state_error(path, "field '%s' must be a valid integer" % key)
+    if not isinstance(state["created"], str) or not isinstance(state["dir"], str):
+        _state_error(path, "fields 'created' and 'dir' must be strings")
+    if os.path.normcase(os.path.abspath(state["dir"])) != os.path.normcase(os.path.abspath(run_dir)):
+        _state_error(path, "stored run directory does not match the selected directory")
+    if not isinstance(state["has_baseline"], bool):
+        _state_error(path, "field 'has_baseline' must be boolean")
+    if "mode" in state and state["mode"] not in ("lean", "classic"):
+        _state_error(path, "field 'mode' must be 'lean' or 'classic'")
+    agents = state["agents"]
+    if (not isinstance(agents, dict) or state["agents_n"] != len(agents)
+            or set(agents) != set(agent_ids(len(agents)))):
+        _state_error(path, "agents must contain the expected IDs for agents_n")
+    for aid, agent in agents.items():
+        if not isinstance(agent, dict):
+            _state_error(path, "agent %s must be a JSON object" % aid)
+        if not isinstance(agent.get("alive"), bool) or not isinstance(agent.get("solution"), str):
+            _state_error(path, "agent %s has invalid alive or solution fields" % aid)
+        if type(agent.get("byes")) is not int or agent["byes"] < 0:
+            _state_error(path, "agent %s has an invalid byes count" % aid)
+        card = agent.get("card")
+        if not isinstance(card, dict) or any(not isinstance(card.get(part), dict)
+                                             for part in ("reasoning", "workflow", "strategy")):
+            _state_error(path, "agent %s has an invalid strategy card" % aid)
+    rounds = state["rounds"]
+    if not isinstance(rounds, list):
+        _state_error(path, "rounds must be a JSON array")
+    if state["agents_n"] > 1 and not rounds:
+        _state_error(path, "arenas with multiple agents must have a round")
+    expected_alive = set(agents)
+    for index, rd in enumerate(rounds, 1):
+        if (not isinstance(rd, dict) or type(rd.get("n")) is not int
+                or rd.get("n") != index):
+            _state_error(path, "round numbers must be consecutive JSON objects")
+        alive = rd.get("alive")
+        matches = rd.get("matches")
+        bye = rd.get("bye")
+        if (not isinstance(alive, list) or len(alive) < 2
+                or any(not isinstance(a, str) for a in alive)
+                or len(alive) != len(set(alive))
+                or set(alive) != expected_alive or not isinstance(matches, list)
+                or not isinstance(rd.get("closed"), bool)):
+            _state_error(path, "round %d has invalid alive, matches, or closed fields" % index)
+        if bye is not None and (not isinstance(bye, str) or bye not in expected_alive):
+            _state_error(path, "round %d bye is not alive" % index)
+        if (len(expected_alive) % 2 == 1) != (bye is not None):
+            _state_error(path, "round %d has an inconsistent bye" % index)
+        matched = []
+        next_alive = []
+        ids = set()
+        for match in matches:
+            if not isinstance(match, dict):
+                _state_error(path, "round %d contains a non-object match" % index)
+            mid, a, b = match.get("id"), match.get("a"), match.get("b")
+            if (not isinstance(mid, str) or not mid.startswith("r%d-m" % index)
+                    or mid in ids or not isinstance(a, str) or not isinstance(b, str)
+                    or a not in expected_alive or b not in expected_alive or a == b):
+                _state_error(path, "round %d contains an invalid or duplicate match" % index)
+            ids.add(mid)
+            matched.extend((a, b))
+            winner, loser = match.get("winner"), match.get("loser")
+            if winner is None and loser is None:
+                if rd["closed"]:
+                    _state_error(path, "closed round %d has an unrecorded match" % index)
+            elif winner in (a, b) and loser in (a, b) and winner != loser:
+                next_alive.append(winner)
+            else:
+                _state_error(path, "round %d match %s has inconsistent winner/loser" % (index, mid))
+        if (len(matched) != len(set(matched))
+                or set(matched) & ({bye} if bye else set())
+                or set(matched) != expected_alive - ({bye} if bye else set())):
+            _state_error(path, "round %d matches do not cover its alive agents" % index)
+        if bye:
+            next_alive.append(bye)
+        if rd["closed"]:
+            expected_alive = set(next_alive)
+        elif index < len(rounds):
+            _state_error(path, "only the last round may be open")
+    champion = state["champion"]
+    alive_flags = {aid for aid, agent in agents.items() if agent["alive"]}
+    if champion is not None:
+        if (not isinstance(champion, str) or champion not in agents
+                or len(expected_alive) != 1 or champion not in expected_alive):
+            _state_error(path, "champion does not match the final survivor")
+        if rounds and not rounds[-1]["closed"]:
+            _state_error(path, "champion state has an open final round")
+        if alive_flags != {champion}:
+            _state_error(path, "agent alive flags do not match the champion")
+    elif alive_flags != expected_alive:
+        _state_error(path, "agent alive flags do not match the current round")
+    elif rounds and rounds[-1]["closed"]:
+        _state_error(path, "a closed final round must have a champion")
+    final = state["final"]
+    if final is not None:
+        sides = (final.get("X"), final.get("Y")) if isinstance(final, dict) else ()
+        result = final.get("result") if isinstance(final, dict) else None
+        result_valid = (result is None or (
+            isinstance(result, dict)
+            and result.get("better") in ("champion", "baseline")
+            and isinstance(result.get("reason"), str)
+            and isinstance(result.get("fixed"), list)
+            and all(isinstance(item, str) for item in result["fixed"])
+            and all(value is None or (type(value) in (int, float)
+                                      and 0 <= value <= 100 and math.isfinite(value))
+                    for value in (result.get("champion_total"), result.get("baseline_total")))
+            and all(key in result for key in ("champion_total", "baseline_total"))))
+        if (not state["has_baseline"] or champion is None or not isinstance(final, dict)
+                or any(not isinstance(side, str) for side in sides)
+                or set(sides) != {"champion", "baseline"}
+                or not result_valid):
+            _state_error(path, "final comparison fields are inconsistent")
+    return state
+
+
 def load_state(args):
     d = run_dir_from(args)
     path = os.path.join(d, STATE_FILE)
     if not os.path.isfile(path):
         raise ArenaError("no %s in %s" % (STATE_FILE, d))
-    with open(path, encoding="utf-8") as fh:
-        return json.load(fh)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            state = json.load(fh)
+    except (OSError, ValueError) as e:
+        _state_error(path, "could not read JSON (%s)" % e)
+    return validate_state(state, path, d)
 
 
 def save_state(state):
