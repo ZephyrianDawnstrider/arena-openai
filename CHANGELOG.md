@@ -1,8 +1,8 @@
 # Changelog
 
-This file records the proposed release notes for the project. The v0.3.1 entry is a candidate release and has not been published.
+This file records published release notes for the project.
 
-## v0.3.1 - proposed, 2026-10-03
+## v0.3.1 - released, 2026-10-03
 
 - Clarify the default lean, quick, classic, and maximum planned-call budgets.
 - Document manual Windows PowerShell and macOS/Linux skill-copy installation, prerequisites, and the skill-only ZIP artifact.

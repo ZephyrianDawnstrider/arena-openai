@@ -4,18 +4,18 @@ Arena runs a bounded tournament of candidate answers to one task. Each candidate
 
 This repository contains an Agent Plugin package and a standalone Codex skill. The plugin manifests are at [`plugin.json`](plugin.json) and [`.codex-plugin/plugin.json`](.codex-plugin/plugin.json). The skill and its local Python engine are in [`skills/arena/`](skills/arena/).
 
-The manifests identify candidate version **0.3.1**. Its release notes are proposed; this version has not been published.
+The manifests identify released version **0.3.1**. See [the changelog](CHANGELOG.md) for its release notes.
 
 ## Install the skill by copying it
 
 Requirements: Python 3.10 or newer and the Python standard library. Python 3.10 is the repository's CI test version; earlier versions have not been verified for this release. No package installation or API key is needed for local bracket bookkeeping. A live tournament also needs a host that can run the Arena skill and delegate independent candidate/judge jobs; if it cannot, Arena's instructions require an explicit sequential fallback.
 
-Run the commands from a directory where `arena-openai` does not already exist. They check out this v0.3.1 candidate branch and copy the `arena` skill folder into your user skill directory. After the release is published, change the ref to `v0.3.1`. The examples honor `CODEX_HOME` when set and otherwise use the default `~/.codex` directory. OpenAI's [Codex skill guide](https://developers.openai.com/blog/eval-skills) shows user-scoped skills under `~/.codex/skills`. These commands stop if an `arena` skill already exists, so an existing skill is not silently overwritten. Start a new Codex session after copying so it can discover the skill.
+Run the commands from a directory where `arena-openai` does not already exist. They check out the `v0.3.1` release tag and copy the `arena` skill folder into your user skill directory. The examples honor `CODEX_HOME` when set and otherwise use the default `~/.codex` directory. OpenAI's [Codex skill guide](https://developers.openai.com/blog/eval-skills) shows user-scoped skills under `~/.codex/skills`. These commands stop if an `arena` skill already exists, so an existing skill is not silently overwritten. Start a new Codex session after copying so it can discover the skill.
 
 PowerShell:
 
 ```powershell
-git clone --branch codex/arena-release-polish https://github.com/ZephyrianDawnstrider/arena-openai.git
+git clone --branch v0.3.1 https://github.com/ZephyrianDawnstrider/arena-openai.git
 Set-Location arena-openai
 $source = Join-Path (Get-Location) 'skills\arena'
 $codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $env:USERPROFILE '.codex' }
@@ -28,7 +28,7 @@ Copy-Item -Path $source -Destination $destination -Recurse
 macOS or Linux shell:
 
 ```sh
-git clone --branch codex/arena-release-polish https://github.com/ZephyrianDawnstrider/arena-openai.git
+git clone --branch v0.3.1 https://github.com/ZephyrianDawnstrider/arena-openai.git
 cd arena-openai
 codex_home="${CODEX_HOME:-$HOME/.codex}"
 destination="$codex_home/skills/arena"
@@ -40,7 +40,7 @@ mkdir -p "$codex_home/skills"
 cp -R skills/arena "$destination"
 ```
 
-After v0.3.1 is published and its release workflow succeeds, download the GitHub Actions artifact named `arena-skill-v0.3.1`, which contains `arena-skill-v0.3.1.zip`. Extract its `arena/` folder. Copy that folder to the same `skills/arena` destination shown above; set `$source` in PowerShell or the source path in the shell command to the extracted folder. The workflow artifact is not automatically attached to the GitHub release. The ZIP contains the installable skill payload only; it is not a Python package and is not installed with `pip`.
+Download `arena-skill-v0.3.1.zip` from the GitHub Release assets and extract its `arena/` folder. Copy that folder to the same `skills/arena` destination shown above; set `$source` in PowerShell or the source path in the shell command to the extracted folder. The release workflow also uploads a copy in the GitHub Actions artifact named `arena-skill-v0.3.1`; that artifact is separate from the ZIP attached to the release. The ZIP contains the installable skill payload only; it is not a Python package and is not installed with `pip`.
 
 OpenAI's current plugin documentation also describes packaging skills in a plugin and using a local marketplace in Codex. This repository's two manifests identify that package, but this release workflow provides a downloadable skill ZIP; it does not publish or install a marketplace entry. See [Package your plugin](https://developers.openai.com/plugins/build/plugins) for the official plugin and marketplace workflow.
 
