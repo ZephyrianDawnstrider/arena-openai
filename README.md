@@ -1,96 +1,103 @@
-# Arena for ChatGPT + Codex
+# Arena for ChatGPT and Codex
 
-An OpenAI adaptation of [Jakeschincariol/arena-skill](https://github.com/Jakeschincariol/arena-skill).
+Arena runs a bounded tournament of candidate answers to one task. Each candidate receives a distinct reasoning, workflow, and strategy card; candidates meet in a bracket, and a judge selects and improves the answer that advances.
 
-Arena turns one task into a budgeted tournament. A small set of candidate solutions receive different reasoning/workflow/strategy cards, attack each other, defend and revise, and are judged against a written rubric until one solution survives.
+This repository contains an Agent Plugin package and a standalone Codex skill. The plugin manifests are at [`plugin.json`](plugin.json) and [`.codex-plugin/plugin.json`](.codex-plugin/plugin.json). The skill and its local Python engine are in [`skills/arena/`](skills/arena/).
 
-This repository keeps the original portable tournament engine and adapts the orchestration layer for OpenAI skills/plugins and Codex.
+The manifests identify released version **0.3.1**. See [the changelog](CHANGELOG.md) for its release notes.
 
-## What is included
+## Install the skill by copying it
 
-- `skills/arena/SKILL.md` - OpenAI/Codex orchestration instructions
-- `skills/arena/bracket.py` - deterministic tournament state machine
-- `skills/arena/strategies.json` - 2,160 possible strategy cards
-- `skills/arena/rubric.md` - judging rubric
-- `tests/test_bracket.py` - engine tests
-- `plugin.json` - portable Agent Plugins manifest
-- `.codex-plugin/plugin.json` - Codex compatibility manifest
+Requirements: Python 3.10 or newer and the Python standard library. Python 3.10 is the repository's CI test version; earlier versions have not been verified for this release. No package installation or API key is needed for local bracket bookkeeping. A live tournament also needs a host that can run the Arena skill and delegate independent candidate/judge jobs; if it cannot, Arena's instructions require an explicit sequential fallback.
 
-## Important compatibility note
+Run the commands from a directory where `arena-openai` does not already exist. They check out the `v0.3.1` release tag and copy the `arena` skill folder into your user skill directory. The examples honor `CODEX_HOME` when set and otherwise use the default `~/.codex` directory. OpenAI's [Codex skill guide](https://developers.openai.com/blog/eval-skills) shows user-scoped skills under `~/.codex/skills`. These commands stop if an `arena` skill already exists, so an existing skill is not silently overwritten. Start a new Codex session after copying so it can discover the skill.
 
-The bracket engine is fully local and portable. True parallel competitors require a host/runtime that exposes independent sub-agents or equivalent delegation. In environments without that capability, the skill must use an explicit sequential fallback and must not pretend those runs were independent agents.
+PowerShell:
 
-## Install / use with Codex
-
-Clone the repository, then register the repository as a plugin/skill source according to your Codex environment.
-
-The portable plugin is rooted at this repository. The compatibility manifest also declares:
-
-```json
-{
-  "name": "arena-openai",
-  "version": "0.3.0",
-  "description": "Tournament-style answer refinement for ChatGPT and Codex.",
-  "skills": "./skills/"
-}
+```powershell
+git clone --branch v0.3.1 https://github.com/ZephyrianDawnstrider/arena-openai.git
+Set-Location arena-openai
+$source = Join-Path (Get-Location) 'skills\arena'
+$codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $env:USERPROFILE '.codex' }
+$destination = Join-Path (Join-Path $codexHome 'skills') 'arena'
+if (Test-Path $destination) { throw "Arena skill already exists at $destination. Review it before updating." }
+New-Item -ItemType Directory -Path (Split-Path $destination) -Force | Out-Null
+Copy-Item -Path $source -Destination $destination -Recurse
 ```
 
-Then ask Codex to use the Arena skill, for example:
+macOS or Linux shell:
 
+```sh
+git clone --branch v0.3.1 https://github.com/ZephyrianDawnstrider/arena-openai.git
+cd arena-openai
+codex_home="${CODEX_HOME:-$HOME/.codex}"
+destination="$codex_home/skills/arena"
+if [ -e "$destination" ]; then
+  printf 'Arena skill already exists at %s. Review it before updating.\n' "$destination" >&2
+  exit 1
+fi
+mkdir -p "$codex_home/skills"
+cp -R skills/arena "$destination"
 ```
-Use arena to solve this task: ...
+
+Download `arena-skill-v0.3.1.zip` from the GitHub Release assets and extract its `arena/` folder. Copy that folder to the same `skills/arena` destination shown above; set `$source` in PowerShell or the source path in the shell command to the extracted folder. The release workflow also uploads a copy in the GitHub Actions artifact named `arena-skill-v0.3.1`; that artifact is separate from the ZIP attached to the release. The ZIP contains the installable skill payload only; it is not a Python package and is not installed with `pip`.
+
+OpenAI's current plugin documentation also describes packaging skills in a plugin and using a local marketplace in Codex. This repository's two manifests identify that package, but this release workflow provides a downloadable skill ZIP; it does not publish or install a marketplace entry. See [Package your plugin](https://developers.openai.com/plugins/build/plugins) for the official plugin and marketplace workflow.
+
+## Use Arena
+
+Ask Codex to use the skill and state the task. Flags are optional:
+
+```text
+$arena --quick Compare these two approaches and recommend one: ...
 ```
 
-or:
+For a difficult task, omit `--quick` to use the default four-candidate tournament:
 
+```text
+$arena Find the root cause of this failure and propose a fix: ...
 ```
-Run an arena with 8 competitors for this difficult debugging problem: ...
+
+These are live-use examples: a real request can launch model or agent work under the host's normal access, quota, and cost rules. The examples here are not executed as part of documentation checks. Ask Arena to plan before running when you want to inspect the count and budget first.
+
+## Modes and call budget
+
+- Default lean mode: 4 candidates and 7 planned sub-agent calls (4 candidate drafts, then 3 judge-and-improve matches).
+- `--quick`: 2 candidates and 3 planned calls.
+- `--classic`: the original attack, defend, judge flow, with 5 calls per match. Four candidates require 19 total calls including their four initial drafts.
+- `--agents N`: choose the field size.
+- `--seed S`: make the strategy cards and bracket reproducible.
+- `--wave W`: cap the number of jobs launched together; the host still controls its actual worker capacity.
+- `--max-calls C`: set the hard planned-call ceiling. It defaults to 32. Arena refuses a plan above that ceiling unless the user explicitly raises it.
+
+The counts include initial candidate drafts and, when requested, the final comparison against a rejected baseline. They are planned agent calls, not a guarantee of elapsed time or billed tokens. The 100-candidate classic plan needs 595 calls and exceeds the default cap.
+
+Lean mode uses one judge-and-improve call per match. Classic mode preserves separate attack, defend, and judge phases for work that benefits from that extra scrutiny. The smaller call count does not guarantee a better answer: assess the result against the task and rubric.
+
+## Reproducible local examples
+
+Run the fixture harness from the repository root. It writes two deterministic simulations to the chosen output folder and makes no model/API calls:
+
+```powershell
+python examples/run_fixture.py --output-dir "$env:TEMP\arena-fixtures"
 ```
 
-## Modes
+```sh
+python3 examples/run_fixture.py --output-dir "${TMPDIR:-/tmp}/arena-fixtures"
+```
 
-- default: 4 competitors, 7 calls
-- `--quick`: 2 competitors, 3 calls
-- `--classic`: original attack, defend, judge flow; 19 calls with 4 competitors
-- `--agents N`: choose the competitor count
-- `--seed S`: reproducible cards and bracket
-- `--wave W`: jobs grouped per orchestration wave; set it to current host capacity
-- `--max-calls C`: hard call budget; default 32
+Use a new or empty output directory for each run. The fixtures cover a two-candidate lean quick run (3 synthetic planned calls) and a two-candidate classic run (7 synthetic planned calls). Each result includes its Arena state and a `winner.txt` file with the champion ID and solution. These deterministic simulations verify bracket bookkeeping; they do not run independent agents or evaluate answer quality. See the [observed fixture output](docs/demo.md).
 
-The default engine uses one expert judge-and-improve call per match. It refuses runs above 32 calls
-unless the caller explicitly raises `--max-calls`. Four competitors now need 7 calls instead of 19;
-eight need 15 instead of 43. The historical 100-competitor classic mode requires 595 calls and should
-be used only after explicit cost approval.
+## Historical benchmark and model guidance
 
-### Benchmark against the original flow
+The v0.3.0 README recorded one controlled two-candidate comparison: the classic flow used 7 calls and lean used 3, a 57% reduction; a separate blind evaluator preferred the lean answer 46/50 to 42/50. This is one task-specific result, not a general quality guarantee. The v0.3.0 model guidance preferred Sol-class candidates and an Astra-class judge when the host supported worker-specific model selection; model names and availability can change. See [`docs/history.md`](docs/history.md) for the preserved historical wording and scope.
 
-We ran both flows on the same two independently generated answers to a production PostgreSQL migration
-task, with the same task, candidates, rubric, and Astra-class judging tier. The original attack,
-defend, judge flow used 7 calls; the default judge-and-improve flow used 3, a 57% reduction. A separate
-blind evaluator preferred the optimized answer (46/50 versus 42/50), citing better completeness,
-specificity, and rollback safety. This is one controlled benchmark, not a universal quality guarantee;
-`--classic` remains available for unusually adversarial work.
+## Compatibility and safety
 
-## Codex model and concurrency policy
+The bracket engine runs locally. Independent competitors require a host with separate agents or equivalent delegation. When unavailable, follow the skill's sequential fallback and disclose that the candidates were not independent. `--wave` limits work within the host's real concurrency capacity; it does not create workers.
 
-Arena adapts to the current runtime rather than assuming every Codex task has the same worker limit.
-Balanced Sol-class models are appropriate for candidates. When worker-specific model selection is
-available, the judge-and-improve and final comparison should prefer `gpt-6-astra` unless the user
-chose another model. This is the quality, cost, and latency sweet spot: capable diverse drafts plus a
-strong decision-maker, without five model calls per match. Model selection does not create additional
-concurrent worker slots.
+Tournament state is stored under `.arena/` in the current project. Competitors must return proposed code changes for the user to review; they must not edit the user's project during the tournament.
 
-## Safety / project isolation
+## Project history and license
 
-Arena's generated tournament state lives under `.arena/`. Competitors should not directly modify the user's project during the tournament. Code changes should be returned as patches/full files in the candidate answer and only applied after the user chooses to do so.
-
-## Attribution
-
-Original Arena project by Jake Schincariol:
-https://github.com/Jakeschincariol/arena-skill
-
-The original project is MIT licensed. This adaptation preserves that license and attribution.
-
-## Status
-
-This is an adaptation for OpenAI's current skills/plugin model. The Python tournament engine is inherited from the original project; the OpenAI-specific orchestration layer is maintained here.
+This is an OpenAI orchestration and packaging adaptation of [Jake Schincariol's Arena project](https://github.com/Jakeschincariol/arena-skill). The inherited engine, strategy cards, rubric, and tests retain the original MIT attribution. See [`CREDITS.md`](CREDITS.md), [`LICENSE`](LICENSE), and [`CHANGELOG.md`](CHANGELOG.md).

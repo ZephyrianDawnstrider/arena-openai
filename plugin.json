@@ -1,6 +1,6 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "arena-openai",
-  "version": "0.3.0",
-  "description": "Tournament-style adversarial answer refinement for ChatGPT and Codex."
+  "version": "0.3.1",
+  "description": "Budgeted tournaments for refining answers in ChatGPT and Codex."
 }
