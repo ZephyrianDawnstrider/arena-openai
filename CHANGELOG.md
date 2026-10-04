@@ -1,6 +1,13 @@
 # Changelog
 
-This file records published release notes for the project.
+Published release notes and unreleased candidate notes are kept separately below.
+
+## v0.3.3 - candidate, not released
+
+- Encode task text as JSON and mark task, baseline, and generated work as untrusted data with an explicit authority boundary.
+- Report exact missing judge artifacts and stop unsafe advancement; document a bounded rerun and failure-report path.
+- Add a skill VERSION marker and validate every packaged byte against the source payload.
+- Document reversible update and uninstall steps without changing installed copies.
 
 ## v0.3.2 - released, 2026-10-03
 

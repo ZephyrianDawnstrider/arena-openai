@@ -4,7 +4,7 @@ Arena runs a bounded tournament of candidate answers to one task. Each candidate
 
 This repository contains an Agent Plugin package and a standalone Codex skill. The plugin manifests are at [`plugin.json`](plugin.json) and [`.codex-plugin/plugin.json`](.codex-plugin/plugin.json). The skill and its local Python engine are in [`skills/arena/`](skills/arena/).
 
-The manifests identify released version **0.3.2**. See [the changelog](CHANGELOG.md) for its release notes.
+The latest published version remains **0.3.2**. The repository may contain a newer unreleased candidate; check both plugin manifests and `skills/arena/VERSION` before copying a working tree. See [the changelog](CHANGELOG.md) for release and candidate notes.
 
 ## Install the skill by copying it
 
@@ -41,6 +41,32 @@ cp -R skills/arena "$destination"
 ```
 
 Download `arena-skill-v0.3.2.zip` from the GitHub Release assets and extract its `arena/` folder. Copy that folder to the same `skills/arena` destination shown above; set `$source` in PowerShell or the source path in the shell command to the extracted folder. The release workflow also uploads a copy in the GitHub Actions artifact named `arena-skill-v0.3.2`; that artifact is separate from the ZIP attached to the release. The ZIP contains the installable skill payload only; it is not a Python package and is not installed with `pip`.
+
+## Update or uninstall a copied skill
+
+The copied `skills/arena/VERSION` file identifies the installed skill version. Confirm the source is a published release and inspect its version before updating. Keep the old folder as a reversible backup; do not merge files across versions.
+
+PowerShell update (set `$source` to the new release's `skills\arena` folder and `$version` to its VERSION text):
+
+```powershell
+$version = (Get-Content (Join-Path $source 'VERSION') -Raw).Trim()
+$currentVersion = (Get-Content (Join-Path $destination 'VERSION') -Raw).Trim()
+if (-not $version -or $version -eq $currentVersion) { throw "Choose a different source version; installed version is $currentVersion." }
+$backup = "$destination.backup-$currentVersion"
+if (Test-Path $backup) { throw "Backup already exists: $backup" }
+Move-Item -LiteralPath $destination -Destination $backup
+try { Copy-Item -LiteralPath $source -Destination $destination -Recurse }
+catch { Move-Item -LiteralPath $backup -Destination $destination; throw }
+if ((Get-Content (Join-Path $destination 'VERSION') -Raw).Trim() -ne $version) {
+  Remove-Item -LiteralPath $destination -Recurse
+  Move-Item -LiteralPath $backup -Destination $destination
+  throw 'Installed version check failed; previous skill restored.'
+}
+```
+
+After verifying Arena works in a new session, remove the backup manually if you no longer need rollback. To uninstall, rename `skills/arena` to a backup name first, start a new session to confirm the skill is no longer discovered, then remove that backup if desired. These steps only affect the selected user skill folder; they do not uninstall a marketplace plugin.
+
+macOS or Linux: compare `cat "$source/VERSION"` with `cat "$destination/VERSION"`, choose a unique backup path, move the old directory there, copy the new `skills/arena` directory into place, and verify `cat "$destination/VERSION"`. If copying or verification fails, remove only the new destination and move the backup back. For uninstall, move the destination aside, verify discovery in a new session, then remove it if desired.
 
 OpenAI's current plugin documentation also describes packaging skills in a plugin and using a local marketplace in Codex. This repository's two manifests identify that package, but this release workflow provides a downloadable skill ZIP; it does not publish or install a marketplace entry. See [Package your plugin](https://developers.openai.com/plugins/build/plugins) for the official plugin and marketplace workflow.
 

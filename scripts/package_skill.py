@@ -6,7 +6,7 @@ import os
 import zipfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PAYLOAD = ("SKILL.md", "rubric.md", "bracket.py", "strategies.json", "LICENSE", "CREDITS.md")
+PAYLOAD = ("SKILL.md", "rubric.md", "bracket.py", "strategies.json", "VERSION", "LICENSE", "CREDITS.md")
 
 
 def package(tag, output_dir):
@@ -16,6 +16,10 @@ def package(tag, output_dir):
         installed_version = json.load(stream)["version"]
     if version != installed_version:
         raise ValueError("plugin.json and .codex-plugin/plugin.json versions differ")
+    with open(os.path.join(REPO, "skills", "arena", "VERSION"), encoding="utf-8") as stream:
+        skill_version = stream.read().strip()
+    if version != skill_version:
+        raise ValueError("plugin manifest and skills/arena/VERSION versions differ")
     if tag.removeprefix("v") != version:
         raise ValueError("release tag %r does not match plugin version %r" % (tag, version))
     os.makedirs(output_dir, exist_ok=True)
@@ -32,7 +36,7 @@ def package(tag, output_dir):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--tag", required=True, help="published release tag, such as v0.3.2")
+    parser.add_argument("--tag", required=True, help="version tag matching both manifests and skills/arena/VERSION")
     parser.add_argument("--output-dir", default="dist")
     args = parser.parse_args()
     print("Created " + package(args.tag, os.path.abspath(args.output_dir)))

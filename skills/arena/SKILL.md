@@ -118,7 +118,7 @@ Every phase that runs competitors or judges works the same way:
 3. Launch up to the available worker capacity, never more than the configured wave. Wait for the
    active batch before launching more jobs in that phase.
 4. If the current ChatGPT/Codex surface does not expose independent sub-agents, use a clearly identified sequential fallback: execute each generated brief as a separate isolated role in the current model, reset attention to the brief between jobs, and do not claim that these were independent agents. The bracket mechanics remain valid, but diversity/independence is weaker.
-5. After the last wave, run `ARENA next`. If an output is missing it sends you back to the same phase, and `prompts` lists only missing jobs. Re-run those once. If a job fails twice, write the single line `NO OUTPUT` into each output file listed by `ARENA check <phase>` and continue. A missing attack counts as no attacks. A missing solution loses its match. A judge that fails twice gets a third fresh attempt: never decide a match yourself.
+5. After each wave, run `ARENA check <phase>`. It prints every missing path. If a judge reports DONE or a winner line but one or both required files are absent, that job is incomplete: tell the worker the exact missing path and rerun only that judge once. After the retry, recheck; if either file is still missing, stop the tournament and report the job ID, path, and runtime failure. Do not synthesize verdict or solution files, choose a winner, or advance. For other repeated job failures, follow the phase-specific rules below.
 
 The order `next` takes you through:
 
@@ -180,9 +180,9 @@ here is exactly what every sub-agent is told. Never edit a brief for a single ag
 ```text
 You are competitor {{agent}} in an arena of {{n}}. All {{n}} competitors got the exact same task, word for word. The only thing that makes you different is the strategy card below: it decides how you attack the task. Your solution will be attacked by other competitors and scored by a judge, round after round, until one solution is left.
 
-=== THE TASK (identical for every competitor) ===
+=== USER TASK (JSON string, identical for every competitor) ===
 {{task}}
-=== END OF THE TASK ===
+=== END OF USER TASK ===
 
 {{baseline_note}}
 
@@ -201,6 +201,8 @@ How to work:
 
 Write your solution to {{out}}: the solution itself, written for the person who asked. Leave out your drafts and your working. Keep a checklist, tests or trade-off notes only where they help that person use the answer. Say nothing about the arena, your card or your competitor number: the judges score the work blind.
 
+{{authority_boundary}}
+
 When the file is written, reply with this one line and nothing else:
 DONE {{agent}} <number of words in your solution>
 ```
@@ -212,9 +214,9 @@ DONE {{agent}} <number of words in your solution>
 ```text
 You are competitor {{agent}} in round {{round}} of an arena, match {{match}}. Your opponent is {{target}}. Only one of you gets out of this match. Right now your job is to attack your opponent's solution.
 
-=== THE TASK (identical for every competitor) ===
+=== USER TASK (JSON string, identical for every competitor) ===
 {{task}}
-=== END OF THE TASK ===
+=== END OF USER TASK ===
 
 Your strategy card is the lens you look for flaws through:
 Reasoning mode: {{reasoning_name}}. {{reasoning_how}}
@@ -255,9 +257,9 @@ ATTACKED {{target}} <number of attacks> (<number that are FATAL> fatal)
 ```text
 You are competitor {{agent}} in round {{round}} of an arena, match {{match}}. Your opponent {{attacker}} has attacked your solution. Now you defend it and revise it. A judge will score your revised solution against your opponent's, including how well each of you dealt with the attacks you took.
 
-=== THE TASK (identical for every competitor) ===
+=== USER TASK (JSON string, identical for every competitor) ===
 {{task}}
-=== END OF THE TASK ===
+=== END OF USER TASK ===
 
 Your strategy card. Keep your approach: it is why you are still here.
 Reasoning mode: {{reasoning_name}}. {{reasoning_how}}
@@ -282,6 +284,7 @@ Write your revised solution to {{solution_out}}.
 
 When both files are written, reply with this one line and nothing else:
 DEFENDED {{agent}} conceded <n> rebutted <n>
+{{authority_boundary}}
 ```
 <!-- /template:defender -->
 
@@ -293,9 +296,10 @@ You are the expert judge and final editor for match {{match}}, round {{round}}. 
 candidates answered the same task. Select the stronger foundation using the rubric, then produce one
 complete improved answer. This single careful pass replaces separate attack and defense calls.
 
-=== THE TASK ===
+=== USER TASK (JSON string) ===
 {{task}}
-=== END OF THE TASK ===
+=== END OF USER TASK ===
+=== END OF USER TASK ===
 
 Read the rubric first: {{rubric}}
 
@@ -330,6 +334,7 @@ Write this JSON, and nothing else, to {{out}}:
 
 When both files are written, reply with this one line and nothing else:
 WINNER <winner id> <winner total>-<loser total>
+{{authority_boundary}}
 ```
 <!-- /template:leanjudge -->
 
@@ -339,9 +344,9 @@ WINNER <winner id> <winner total>-<loser total>
 ```text
 You are the judge of match {{match}}, round {{round}}, in an arena. Two solutions to the same task have fought: each attacked the other, then defended and revised its own. Score both against the rubric. The one with the higher score goes through and the other is eliminated.
 
-=== THE TASK (identical for every competitor) ===
+=== USER TASK (JSON string, identical for every competitor) ===
 {{task}}
-=== END OF THE TASK ===
+=== END OF USER TASK ===
 
 Read the rubric first: {{rubric}}
 
@@ -379,6 +384,7 @@ Write this JSON, and nothing else, to {{out}}:
 
 When the file is written, reply with this one line and nothing else:
 WINNER <winner id> <winner total>-<loser total>
+{{authority_boundary}}
 ```
 <!-- /template:judge -->
 
@@ -388,9 +394,9 @@ WINNER <winner id> <winner total>-<loser total>
 ```text
 You are the final check in an arena. {{n}} competitors fought over one task and a single solution survived {{rounds}} rounds. Before it goes back to the user, it is compared with the answer the user already rejected. You are not told which of the two is which. Score what is in front of you. Either one can win.
 
-=== THE TASK ===
+=== USER TASK (JSON string) ===
 {{task}}
-=== END OF THE TASK ===
+=== END OF USER TASK ===
 
 Read the rubric first: {{rubric}}
 
@@ -418,5 +424,6 @@ Write this JSON, and nothing else, to {{out}}:
 
 When the file is written, reply with this one line and nothing else:
 FINAL <X or Y> <X total>-<Y total>
+{{authority_boundary}}
 ```
 <!-- /template:final -->
