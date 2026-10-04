@@ -78,25 +78,31 @@ Ask Codex to use the skill and state the task. Flags are optional:
 $arena --quick Compare these two approaches and recommend one: ...
 ```
 
-For a difficult task, omit `--quick` to use the default four-candidate tournament:
+For a complex task, deliberately choose the four-candidate lean tournament:
 
 ```text
-$arena Find the root cause of this failure and propose a fix: ...
+$arena --agents 4 Find the root cause of this failure and propose a fix: ...
 ```
 
 These are live-use examples: a real request can launch model or agent work under the host's normal access, quota, and cost rules. The examples here are not executed as part of documentation checks. Ask Arena to plan before running when you want to inspect the count and budget first.
 
 ## Modes and call budget
 
-- Default lean mode: 4 candidates and 7 planned sub-agent calls (4 candidate drafts, then 3 judge-and-improve matches).
-- `--quick`: 2 candidates and 3 planned calls.
+- Default lean mode / `--quick`: 2 candidates and 3 planned calls for straightforward tasks.
+- `--agents 4`: deliberate complex-task lean mode, 7 calls (4 drafts and 3 judge-and-improve matches).
 - `--classic`: the original attack, defend, judge flow, with 5 calls per match. Four candidates require 19 total calls including their four initial drafts.
 - `--agents N`: choose the field size.
 - `--seed S`: make the strategy cards and bracket reproducible.
-- `--wave W`: cap the number of jobs launched together; the host still controls its actual worker capacity.
+- `--wave W`: cap jobs launched together at observed available worker capacity; unknown capacity defaults to 1.
 - `--max-calls C`: set the hard planned-call ceiling. It defaults to 32. Arena refuses a plan above that ceiling unless the user explicitly raises it.
 
-The counts include initial candidate drafts and, when requested, the final comparison against a rejected baseline. They are planned agent calls, not a guarantee of elapsed time or billed tokens. The 100-candidate classic plan needs 595 calls and exceeds the default cap.
+The listed counts include initial drafts; comparing against a rejected baseline adds one final call.
+Pass an explicit planned-call ceiling and per-wave limit for each run. More agents increase calls
+and input/output bytes. Parallelism can reduce dependency waves only within actual worker capacity;
+neither planned waves nor synthetic local timing measure model wall time. Byte-based token estimates
+are rough proxies, not billed usage. Reserve 8 or more agents for cases where runtime capacity and
+task-specific blind quality evidence justify the cost. There is no automatic complexity classifier.
+The 100-candidate classic plan needs 595 calls and exceeds the default cap.
 
 Lean mode uses one judge-and-improve call per match. Classic mode preserves separate attack, defend, and judge phases for work that benefits from that extra scrutiny. The smaller call count does not guarantee a better answer: assess the result against the task and rubric.
 
@@ -124,7 +130,23 @@ The bracket engine runs locally. Independent competitors require a host with sep
 
 Tournament state is stored under `.arena/` in the current project. Competitors must return proposed code changes for the user to review; they must not edit the user's project during the tournament.
 
-The engine rejects present scores that are nonnumeric, nonfinite, boolean, or outside 0 to 10 instead of clamping them. Missing or incomplete scores may still use the judge's declared winner. A verdict with a mismatched match ID or unrelated participant keys is quarantined as `.unreadable`; repeated rejects receive a numbered suffix so earlier evidence is preserved. Lean collection and round advancement require every synthesized winner solution. Invalid saved state stops with an error and remains unchanged for inspection; the engine does not repair or redirect it automatically.
+New lean runs require one atomic `.result.json` from the judge, containing strict verdict fields and
+a nonempty `solution` string. The collector rejects trailing text, duplicate/extra/missing fields,
+wrong identities, incomplete or invalid scores, a winner inconsistent with scoring, invalid UTF-8,
+and recognizable leaked artifact commands or embedded verdicts. It never sanitizes an answer into success.
+Rejected bytes are preserved as `.unreadable` with numbered suffixes. Presence checks do not validate
+content; `collect` must succeed before advancement. Stop on invalid results and report the error;
+no automatic model retry is authorized by the skill.
+
+Only after validation does the collector stage both derived files and atomically replace each,
+solution first and verdict last. Two separate files are not one filesystem transaction. A write
+failure leaves the match unrecorded and retains the source result for deterministic local retry;
+no additional judge call is needed for an extraction failure. Schema checks cannot prove answer quality.
+
+Existing v0.3.2 states remain readable. Lean states without `lean_result_format` retain the legacy
+two-file contract; classic and final verdicts also keep their previous validation behavior, including
+the incomplete-score fallback. They do not gain the new strict-result guarantee retroactively.
+Invalid saved state stops unchanged for inspection.
 
 ## Project history and license
 

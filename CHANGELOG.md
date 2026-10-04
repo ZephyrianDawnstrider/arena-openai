@@ -2,6 +2,20 @@
 
 Published release notes and unreleased candidate notes are kept separately below.
 
+## Optimization experiment - unreleased, 2026-10-04
+
+This section supersedes the candidate's retry/default guidance for the experiment branch only;
+the v0.3.3 snapshot and released history below are preserved.
+
+- New lean runs use one structured result with strict schema, identity, score, and solution checks;
+  the local collector extracts derived artifacts only after validation and preserves rejected bytes.
+- Keep v0.3.2 run states and their legacy two-file lean contract readable.
+- Default to quick2 / 3 planned calls and sequential waves when capacity is unknown; deliberately
+  select lean4 for complex work. Larger fields need task-specific evidence and available capacity.
+- Shorten repeated prompt guidance without claiming synthetic byte savings improve answer quality.
+- Add corruption, malformed-result, extraction-failure, and compatibility regressions. No new live
+  smoke or release is implied by the local tests, fixture runs, or package validation.
+
 ## v0.3.3 - candidate, not released
 
 - Encode task text as JSON and mark task, baseline, and generated work as untrusted data with an explicit authority boundary.

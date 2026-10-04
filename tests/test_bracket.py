@@ -213,11 +213,11 @@ class Dealer(unittest.TestCase):
 class Plan(unittest.TestCase):
     def test_numbers(self):
         self.assertEqual(B.bracket_sizes(100), [100, 50, 25, 13, 7, 4, 2, 1])
-        t = B.plan_totals(100)
+        t = B.plan_totals(100, wave=4)
         self.assertEqual((t["rounds"], t["calls"], t["waves"]), (7, 199, 53))
-        t = B.plan_totals(16)
+        t = B.plan_totals(16, wave=4)
         self.assertEqual((t["rounds"], t["calls"], t["waves"]), (4, 31, 9))
-        classic = B.plan_totals(100, mode="classic")
+        classic = B.plan_totals(100, wave=4, mode="classic")
         self.assertEqual((classic["rounds"], classic["calls"], classic["waves"]), (7, 595, 155))
 
     def test_lean_collapses_each_match_to_one_expert_job(self):
@@ -227,7 +227,7 @@ class Plan(unittest.TestCase):
         self.assertEqual(B.phase_jobs(lean, "defend"), [])
         judges = B.phase_jobs(lean, "judge")
         self.assertEqual(len(judges), 2)
-        self.assertTrue(all(j["kind"] == "leanjudge" and len(j["outputs"]) == 2 for j in judges))
+        self.assertTrue(all(j["kind"] == "leanjudge" and len(j["outputs"]) == 1 for j in judges))
 
         classic = B.new_state(4, 1, data, "/tmp/classic", mode="classic")
         self.assertEqual(len(B.phase_jobs(classic, "attack")), 4)
@@ -315,6 +315,11 @@ class FullPipelineWithFakeAgents(TempDir):
                 s = lambda: {k: rng.randint(3, 10) for k, _ in B.WEIGHTS}
                 v = {"match": j["match"], "scores": {a: s(), b: s()}, "winner": a, "reason": "fake",
                      "survived": ["too short"], "standing": {a: [], b: []}}
+                if B.structured_lean(state):
+                    for scores in v["scores"].values():
+                        scores["fatal"] = False
+                    v["winner"] = B.decide(v, a, b)[0]
+                    v["solution"] = "Salt on the long wind, improved in match."
                 write(j["outputs"][0], json.dumps(v))
                 if len(j["outputs"]) > 1:
                     write(j["outputs"][1], "Salt on the long wind, improved in match.")
@@ -412,7 +417,7 @@ class FullPipelineWithFakeAgents(TempDir):
         self.ok("init", "--agents", 2, "--seed", 1, "--task", "t", "--dir", d)
         state = load(d)
         m = state["rounds"][0]["matches"][0]
-        path = B.verdict_out(d, 1, m["id"])
+        path = B.result_out(d, 1, m["id"])
         os.makedirs(os.path.dirname(path), exist_ok=True)
         write(path, "the judge rambled and wrote no json")
         r = cli("collect", "--dir", d)
@@ -425,6 +430,8 @@ class FullPipelineWithFakeAgents(TempDir):
         d = os.path.join(self.tmp, "judge-contract")
         self.ok("init", "--quick", "--seed", 2, "--task", "t", "--dir", d)
         state = load(d)
+        state.pop("lean_result_format")  # Preserve the v0.3.2 two-file contract.
+        B.save_state(state)
         match = state["rounds"][0]["matches"][0]
         self.ok("prompts", "judge", "--dir", d)
         verdict, synthesized = B.verdict_out(d, 1, match["id"]), B.synthesized_out(d, 1, match["id"])
@@ -445,7 +452,7 @@ class FullPipelineWithFakeAgents(TempDir):
         self.ok("init", "--agents", 2, "--seed", 1, "--task", "t", "--dir", d)
         state = load(d)
         m = state["rounds"][0]["matches"][0]
-        path = B.verdict_out(d, 1, m["id"])
+        path = B.result_out(d, 1, m["id"])
         os.makedirs(os.path.dirname(path), exist_ok=True)
         bad = json.dumps({"match": "r1-other", "winner": m["a"]})
         write(path, bad)
@@ -460,6 +467,8 @@ class FullPipelineWithFakeAgents(TempDir):
         d = os.path.join(self.tmp, "lean-missing-synth")
         self.ok("init", "--agents", 2, "--seed", 1, "--task", "t", "--dir", d)
         state = load(d)
+        state.pop("lean_result_format")  # Preserve the v0.3.2 two-file contract.
+        B.save_state(state)
         m = state["rounds"][0]["matches"][0]
         path = B.verdict_out(d, 1, m["id"])
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -552,13 +561,14 @@ class Guards(TempDir):
         self.assertEqual(cli("init", "--quick", "--agents", 8, "--task", "t", "--dir", d + "4").returncode, 2)
         self.assertEqual(cli("init", "--agents", 4, "--task", "   ", "--dir", d + "5").returncode, 2)
 
-    def test_quick_is_2_and_default_is_4(self):
+    def test_quick_and_default_are_2_with_conservative_unknown_capacity(self):
         d = os.path.join(self.tmp, "quick")
         self.ok("init", "--quick", "--task", "t", "--dir", d)
         self.assertEqual(load(d)["agents_n"], 2)
         default_dir = os.path.join(self.tmp, "default")
         self.ok("init", "--task", "t", "--dir", default_dir)
-        self.assertEqual(load(default_dir)["agents_n"], 4)
+        self.assertEqual(load(default_dir)["agents_n"], 2)
+        self.assertEqual(load(default_dir)["wave"], 1)
 
     def test_call_budget_blocks_expensive_runs(self):
         baseline = os.path.join(self.tmp, "baseline.md")

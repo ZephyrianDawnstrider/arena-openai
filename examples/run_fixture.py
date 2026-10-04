@@ -41,9 +41,12 @@ def outputs(phase, jobs):
             write(job["outputs"][1], "Synthetic revised fixture solution for %s.\n" % job["agent"])
         elif phase == "judge":
             a, b = job["a"], job["b"]
-            score = lambda value: {name: value for name, _ in arena.WEIGHTS}
+            score = lambda value: dict({name: value for name, _ in arena.WEIGHTS}, fatal=False)
             verdict = {"match": job["match"], "scores": {a: score(8), b: score(7)},
-                       "winner": a, "reason": "Deterministic synthetic fixture verdict."}
+                       "winner": a, "reason": "Deterministic synthetic fixture verdict.",
+                       "survived": [], "standing": {a: [], b: []}}
+            if job["kind"] == "leanjudge" and len(job["outputs"]) == 1:
+                verdict["solution"] = "Synthetic fixture champion solution for %s.\n" % a
             write(job["outputs"][0], json.dumps(verdict, indent=2) + "\n")
             if len(job["outputs"]) > 1:
                 write(job["outputs"][1], "Synthetic fixture champion solution for %s.\n" % a)

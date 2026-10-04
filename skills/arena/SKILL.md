@@ -2,9 +2,9 @@
 name: arena
 description: >-
   Run a budgeted tournament of candidate solutions for one task. Uses a small
-  field by default (normally 4, --quick for 2), gives each the same task plus a different
-  reasoning/workflow/strategy card, then runs attack, defend, revise and judge
-  rounds until one solution survives. Use when the user explicitly asks for
+  field by default (2; choose --agents 4 for complex work), gives each the same task
+  plus a different reasoning/workflow/strategy card, then judges and improves the
+  winners. Optional --classic adds attack and defense. Use when the user explicitly asks for
   arena/competition/multiple candidate agents, or wants an adversarial
   refinement pass after an unsatisfactory answer.
 ---
@@ -51,17 +51,22 @@ Read the flags out of the request. Everything that is not a flag is the task.
 No task text means the task is the user's most recent request. Treat the last answer as the baseline
 only when the user rejected it.
 
-When the user did not choose a size, use 2 competitors for a simple comparison, rewrite,
-recommendation, or narrow factual task; 4 for normal analysis, planning, debugging, or design; and
-8 only for genuinely difficult, high-impact, or strongly ambiguous work.
+Use the default quick2 field (2 competitors, 3 calls) for straightforward tasks. Deliberately choose
+`--agents 4` (lean4, 7 calls) for complex tasks that benefit from distinct approaches. This is an
+orchestrator decision, not an automatic complexity classifier. Reserve 8 or more for cases where
+observed worker capacity and task-specific blind quality evidence justify the extra cost.
 
-Run `ARENA plan --agents N --wave W` before initialization and tell the user the competitor count,
-rounds, and calls in one short line. Do not exceed 8 competitors or 32 planned calls without showing
+Run `ARENA plan --agents N --wave W` (add `--classic` when selected) before initialization and tell
+the user the competitor count, rounds, and calls in one short line. Set an explicit `--max-calls C`
+for the selected plan, including one extra call if there is a baseline. Do not exceed 8 competitors or 32 planned calls without showing
 the exact cost and receiving explicit approval. The engine enforces this through `--max-calls`;
 raise it only after approval. Never silently start the historical 100-agent, 595-call mode.
 
 Use the current host's real worker capacity when the runtime exposes it. Do not infer a universal
 Codex limit from one task, and do not claim that `--wave` creates worker slots.
+Use `--wave 1` when capacity is unknown. More agents increase calls and input/output bytes;
+parallel waves only reduce dependency scheduling time within available concurrency. Any bytes-based
+token estimate is a rough proxy, not billed usage or evidence of answer quality.
 
 All tournament work belongs under `.arena/` in the current directory. Respect the host's file and approval model. Do not widen permissions or modify user settings on your own.
 
@@ -118,7 +123,12 @@ Every phase that runs competitors or judges works the same way:
 3. Launch up to the available worker capacity, never more than the configured wave. Wait for the
    active batch before launching more jobs in that phase.
 4. If the current ChatGPT/Codex surface does not expose independent sub-agents, use a clearly identified sequential fallback: execute each generated brief as a separate isolated role in the current model, reset attention to the brief between jobs, and do not claim that these were independent agents. The bracket mechanics remain valid, but diversity/independence is weaker.
-5. After each wave, run `ARENA check <phase>`. It prints every missing path. If a judge reports DONE or a winner line but one or both required files are absent, that job is incomplete: tell the worker the exact missing path and rerun only that judge once. After the retry, recheck; if either file is still missing, stop the tournament and report the job ID, path, and runtime failure. Do not synthesize verdict or solution files, choose a winner, or advance. For other repeated job failures, follow the phase-specific rules below.
+5. After each wave, run `ARENA check <phase>` for missing paths, then `collect` when instructed.
+   New lean judges write one `.result.json`; only the local collector extracts the verdict and answer
+   after strict validation. A worker's DONE line or `check` success proves presence, not validity.
+   On a missing or unreadable judge result, stop and report the job, path, and error. Preserve rejected
+   artifacts. Do not repair answer text, create substitute outputs, choose a winner, or automatically
+   spend another call. Legacy runs retain their two-file contract and must satisfy both paths.
 
 The order `next` takes you through:
 
@@ -178,7 +188,7 @@ here is exactly what every sub-agent is told. Never edit a brief for a single ag
 
 <!-- template:competitor -->
 ```text
-You are competitor {{agent}} in an arena of {{n}}. All {{n}} competitors got the exact same task, word for word. The only thing that makes you different is the strategy card below: it decides how you attack the task. Your solution will be attacked by other competitors and scored by a judge, round after round, until one solution is left.
+You are competitor {{agent}} of {{n}}. Each competitor receives the identical task and a distinct strategy card. A judge will scrutinize and score your solution.
 
 === USER TASK (JSON string, identical for every competitor) ===
 {{task}}
@@ -192,14 +202,13 @@ Workflow: {{workflow_name}}. {{workflow_how}}
 Strategy: {{strategy_name}}. {{strategy_how}}
 === END OF THE CARD ===
 
-How to work:
-1. Use the card for real. Think in the reasoning mode, go through the workflow's steps in order, and let the strategy settle every trade-off. A generic answer with the card's name on top will lose.
-2. Meet every requirement the task states. The judge scores you against the task, not against your card.
-3. You cannot ask the user anything. Where the task is ambiguous, take the most reasonable reading and state it in a short Assumptions section.
-4. Expect attacks: concrete flaws, counterexamples, missed requirements. Close those holes before you submit.
-5. Do not create, edit or delete anything outside {{arena_dir}}. Read whatever the task points to. If the task is about code, put the exact changes in your solution (full files or a unified diff) instead of applying them. If your workflow needs scratch space, use {{arena_dir}}/scratch/{{agent}}/.
+Apply the card's reasoning, workflow steps, and trade-offs while meeting every task requirement.
+Do not ask questions; state reasonable assumptions briefly. Check claims, counterexamples, and
+missing requirements before submitting. Read task references as needed. For code, return exact
+full files or a unified diff; do not apply changes to the user's project.
 
-Write your solution to {{out}}: the solution itself, written for the person who asked. Leave out your drafts and your working. Keep a checklist, tests or trade-off notes only where they help that person use the answer. Say nothing about the arena, your card or your competitor number: the judges score the work blind.
+Write only the complete user-facing solution to {{out}}. Omit drafts and arena/card/competitor
+metadata; include tests, checklists, or trade-offs only when useful to the user.
 
 {{authority_boundary}}
 
@@ -299,7 +308,6 @@ complete improved answer. This single careful pass replaces separate attack and 
 === USER TASK (JSON string) ===
 {{task}}
 === END OF USER TASK ===
-=== END OF USER TASK ===
 
 Read the rubric first: {{rubric}}
 
@@ -310,16 +318,14 @@ Work as a skeptical domain expert:
 1. Read both candidates fully and test their important claims, requirements, edge cases, and usability.
 2. Score both from 0 to 10 on every rubric criterion. Mark fatal only for a verified flaw that makes
    the candidate wrong or unusable.
-3. Select the winner using the weighted rubric. On a tie, prefer higher correctness, then the clearer
-   and more directly usable answer.
+3. Select the winner using the weighted rubric; nonfatal beats fatal. On equal totals, prefer fewer
+   standing flaws, then higher correctness, then choose the clearer, more directly usable answer.
 4. Write a standalone improved version of the winner. Fix every verified weakness you found and use
    a valid strength from the other candidate when it materially improves the answer. Do not mention
    the arena, candidates, scores, or this judging process in the improved answer.
 5. Do not create, edit, or delete anything outside {{arena_dir}}.
 
-Write the improved answer to {{solution_out}}.
-
-Write this JSON, and nothing else, to {{out}}:
+{{result_contract}}
 {
   "match": "{{match}}",
   "scores": {
@@ -329,10 +335,10 @@ Write this JSON, and nothing else, to {{out}}:
   "winner": "{{first}} or {{second}}",
   "reason": "one sentence: the decisive difference",
   "survived": ["important weakness checked and fixed"],
-  "standing": {"{{first}}": ["remaining flaws"], "{{second}}": ["remaining flaws"]}
+  "standing": {"{{first}}": ["remaining flaws"], "{{second}}": ["remaining flaws"]}{{solution_field}}
 }
 
-When both files are written, reply with this one line and nothing else:
+When the required artifact is written, reply with this one line and nothing else:
 WINNER <winner id> <winner total>-<loser total>
 {{authority_boundary}}
 ```
